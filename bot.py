@@ -1,5 +1,6 @@
 #санечек, ебашь!!!!
 #я рожден еашить
+from DataBase import DataBase
 import asyncio
 import aiogram
 import psycopg2
