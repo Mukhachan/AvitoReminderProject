@@ -1,25 +1,40 @@
-#санечек, ебашь!!!!
-#я рожден еашить
 from DataBase import DataBase
+from config import host, user, password, db_name
+from datetime import *
 import asyncio
 import aiogram
 import psycopg2
 
+
+# Подключаемся к бд #
+def db_connect():
+    try:
+        db = psycopg2.connect(
+            host = host,
+            user = user,
+            password = password,
+            batabase = db_name
+        )
+    except Exception as ex:
+        print("[INFO] Ошибка при работе с PostgreSQL: ", ex)
+    return db
+
 # Установка соединения с базой данных
-conn = psycopg2.connect(
-    host="localhost",
-    database="mydatabase",
-    user="myusername",
-    password="mypassword"
-)
+conn = DataBase(db_connect())
+"""
+Теперь если надо обратится к бд, пишешь conn.`название функции (аргументы)`
+"""
 
 async def check_database_changes():
     while True:
         try:
             # Отправить запрос на получение времени последнего изменения
+            
+            """
             cursor = conn.cursor()
             cursor.execute("SELECT MAX(last_updated) FROM my_table;")
             last_updated = cursor.fetchone()[0]
+            """
 
             # Сравнить время последнего изменения с текущим временем
             if last_updated >= datetime.now() - timedelta(hours=1):
