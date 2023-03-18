@@ -23,3 +23,18 @@ class DataBase:
         """
         
         """
+
+    def parsing_data_read(self):
+        """
+            Собираем все данные с таблицы parsing_data
+        """
+        try:
+            self.__cur.execute("SELECT * FROM parsing_data")
+            res = self.__cur.fetchall()
+
+            return res if res else None
+        
+        except:
+            print('Ошибка при чтении БД (parsing_data)')
+        
+        
