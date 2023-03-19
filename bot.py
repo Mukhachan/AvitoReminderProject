@@ -3,26 +3,31 @@ from config import host, user, password, db_name
 from datetime import *
 import asyncio
 import aiogram
-import psycopg2
+import pymysql
+import pymysql.cursors
 
-
-# Подключаемся к бд #
+# Подключаемся к бд и получаем экземпляр класса DataBase в лице "conn" #
+conn = None
 def db_connect():
     try:
-        db = psycopg2.connect(
+        global conn 
+        db = pymysql.connect(
             host = host,
+            port = 3306,
             user = user,
             password = password,
-            batabase = db_name
+            database = db_name,
+            cursorclass = pymysql.cursors.DictCursor
         )
+        conn = DataBase(db)
     except Exception as ex:
-        print("[INFO] Ошибка при работе с PostgreSQL: ", ex)
-    return db
+        print("[INFO] Ошибка при работе с MySQL: ", ex)
+    return conn
 
-# Установка соединения с базой данных
-conn = DataBase(db_connect())
+
 """
-Теперь если надо обратится к бд, пишешь conn.`название функции (аргументы)`
+Теперь для подключения к бд надо вызвать функцию db_connect(). 
+А если надо вызвать какой то метод из класса DataBase, пишешь conn.`название функции(аргументы)`
 """
 
 async def check_database_changes():
@@ -43,11 +48,11 @@ async def check_database_changes():
                 await bot.send_message(chat_id="CHAT_ID", text="База данных была изменена!")
             """
             
-        except (psycopg2.DatabaseError, aiogram.exceptions.TelegramAPIError) as e:
+        except (pymysql.DatabaseError, aiogram.exceptions.TelegramAPIError) as e:
             # Обрабатывать ошибки
             print(e)
 
-        # Ждать 1 час перед повторной проверкой базы данных
+        # Ждём 1 час перед повторной проверкой базы данных
         await asyncio.sleep(3600)
 
 # Запустить цикл проверки базы данных
