@@ -26,6 +26,14 @@ def add_item(event):
     exceptionEntry = Entry(addWindow, justify=CENTER)
     exceptionEntry.place(relx=0.5, rely=0.5)
 
+def profile(event):
+    addWindow = Toplevel(root)
+    addWindow.title('Профиль')
+    addWindow.geometry('500x350')
+
+    
+    linkBTN = Button(addWindow, text='Подключить телеграмм бота', width='40', height='1')
+    linkBTN.place(relx=0.25, rely=0.5)
 
 profile = Button(root, text='Профиль', width=8, height=1)
 profile.place(relx=0.93, rely=0.05, anchor=CENTER)
