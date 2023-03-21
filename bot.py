@@ -24,6 +24,7 @@ def db_connect():
         print("[INFO] Ошибка при работе с MySQL: ", ex)
     return conn
 
+db_connect()
 
 """
 Теперь для подключения к бд надо вызвать функцию db_connect(). 

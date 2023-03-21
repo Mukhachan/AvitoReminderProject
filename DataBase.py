@@ -1,6 +1,7 @@
 from config import host, user, password, db_name
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
+import datetime
 
 
 import pymysql
@@ -9,7 +10,7 @@ class DataBase:
     def __init__(self, db):
         self.__connection = db
         self.__cur = db.cursor()
-        self.__key = b'CDvuZAPOVQ-TJDIDp08-1Tm7OGoXOZvEAJ9-mQ4xLLI='
+        self.__key = b'mAJ_0ZIV4Y8FFVx5b-bfBpTNWsqv1hsxt-H5gHvXEYM='
         self.__f = Fernet(self.__key)
 
     def create_table(self) -> bool:
@@ -40,26 +41,32 @@ class DataBase:
         # хешируем пароль #
         password = generate_password_hash(password)
         self.__cur.execute(f"SELECT * FROM `avitoreminder`.`users` WHERE email = '{email}'")
-
-        if self.__cur.fetchone():
+        ex = self.__cur.fetchone()
+        print(ex)
+        if ex:
+            print(ex)
             print('Такой пользователь уже зарегестрирован')
             return False
         
         try:
             """ Создаём запись в таблице users """
+            
             sql_request = f'INSERT INTO `avitoreminder`.`users` (email, password) VALUES ("{email}", "{password}")'
              
             self.__cur.execute(sql_request)
             self.__connection.commit()
              # Берём ID юзера #
+            
             self.__cur.execute(f'SELECT id from `avitoreminder`.`users` WHERE email = "{email}"')
-            id = self.__cur.fetchone()
+            
+            id = bytes(self.__cur.fetchone()['id'])
 
              # Сохраняем зашифрованый ID в файл #
-            with open('cfg.cfg', 'w+') as file:
-                file.write(self.__f.encrypt(id))
+            with open('cfg.cfg', 'w') as file:
+                file.write(str(self.__f.encrypt(id)))
+            DataBase.set_user_state(self)
+            print("Пользователь добавлен")
             return True
-
         except pymysql.err as Error:
             print('[INFO] Возникла ошибка')
             print(Error)
@@ -74,35 +81,26 @@ class DataBase:
         # Проверяем есть ли пользователь с такой почтой #
         try:
             self.__cur.execute(f'SELECT email from `avitoreminder`.`users` WHERE email = "{email}"')
-            res = self.__cur.fetchall()
+            res = self.__cur.fetchone()
             if res:
-                pass
+                print('Пользователь найден')
             else: 
                 return ('Такой пользователь не найден', False)
         except:
             print('[INFO] Возникла ошибка')
         
         self.__cur.execute(f'SELECT * from `avitoreminder`.`users` WHERE email = "{email}"')
-        res = self.__cur.fetchall()
-        hash_psw = (list(res[0])[2])
+        res = self.__cur.fetchone()
+        hash_psw = res['password']
+        print(hash_psw)
         if check_password_hash(hash_psw, password):
+            DataBase.set_user_state(self)
+            print('Успешная авторизация')
             return ("Успешная авторизация", True)
         else:
+            print("Неверный пароль")
             return("Неверный пароль", False)
 
-    def parsing_data_read(self, id: int) -> list:
-        """
-            Собираем все данные с таблицы parsing_data
-        """
-        try:
-            self.__cur.execute(f"SELECT * FROM `avitoreminder`.`parsing_data` WHERE user_id = '{id}'")
-            res = self.__cur.fetchall()
-
-            return res if res else None
-        
-        except:
-            print('Ошибка при чтении БД (parsing_data)')
-        
     def parsing_data_add(self, user_id: int, link: str, title: str, price: int) -> list:
         """ 
         Функция используется для добавления данных в таблицу parsing_data, после парсинга Авито
@@ -116,17 +114,63 @@ class DataBase:
             print("[INFO] Данные успешно добавлены")
         except:
             print('[INFO] Возникла ошибка при добавлении данных в таблицу parsing_data')
-    
-    def set_user_state(self, key: str) -> bool:
+ 
+    def parsing_data_read(self, id: int) -> list:
+        """
+            Собираем все данные с таблицы parsing_data
+            Возвращает список из словарей
+        """
+        try:
+            self.__cur.execute(f"SELECT * FROM `avitoreminder`.`parsing_data` WHERE user_id = '{id}'")
+            res = self.__cur.fetchall()
+            print(res)
+            return res if res else None
+        
+        except:
+            print('Ошибка при чтении БД (parsing_data)')
+        
+   
+    def set_user_state(self) -> tuple:
         """
             Устанавливаем состояние авторизации пользователя.
             Если в таблице нет такого пользователя, мы его создаём и сохраняем все данные.
             Если пользователь есть, то обновляем данные 
         """
-        # Я ваш шифратор в рот ебал #
+        with open('cfg.cfg', 'rb') as f:
+            file = f.read()
+            print(file)
         
+        user_id = self.__f.decrypt(file)
+        print(f'[INFO] Дешифровка user_id: {user_id}')
+        user_id = int(user_id)
+        print(user_id)
 
-    def get_user_state(self):
+        if user_id == '':
+            print('[INFO] Пользователь не авторизирован')
+            return ("Пользователь не авторизирован", False)
+    
+        dt = datetime.datetime.now()
+        dt_string = dt.strftime("%d/%m/%Y %H:%M:%S")
+
+        sql = (
+            f"SELECT id FROM `avitoreminder`.`user_state` WHERE (`user_id` = '{user_id}')"
+        )
+        self.__cur.execute(sql)
+        res = self.__cur.fetchone()
+        
+        if res:    
+            sql = (
+            f'UPDATE `avitoreminder`.`user_state` SET `state`="True", `last_online`="{dt_string}", `last_auth`="{dt_string}" WHERE (`user_id` = "{user_id}"); '
+            )
+        else:
+            sql = (
+            f'INSERT INTO `avitoreminder`.`user_state` SET `state`="True", `last_online`="{dt_string}", `last_auth`="{dt_string}", `user_id`="{user_id}"; '
+            )
+        self.__cur.execute(sql)
+        self.__connection.commit()
+        print('Данные о состоянии успешно обновлены')
+
+    def get_user_state(self) -> str:
         """
             Получаем состояние авторизации пользователя
         """
