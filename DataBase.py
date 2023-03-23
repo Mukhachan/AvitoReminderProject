@@ -1,9 +1,6 @@
-from config import host, user, password, db_name
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 import datetime
-
-
 import pymysql
 
 class DataBase:
@@ -74,7 +71,7 @@ class DataBase:
         
     def get_user(self, email: str, password: str) -> tuple:
         """
-            Функция авторизации пользователя. Возвращает кортеж в виде("ошибка", bool). 
+            Функция авторизации пользователя. Возвращает кортеж в виде("описание", bool). 
                 Есть пользователь или нет.
         """
 
@@ -128,26 +125,31 @@ class DataBase:
         
         except:
             print('Ошибка при чтении БД (parsing_data)')
-        
-   
+          
     def set_user_state(self) -> tuple:
         """
             Устанавливаем состояние авторизации пользователя.
+            Если не найден файл cfg.cfg, то мы возвращаем false в приложение и вызываем окно авторизации
             Если в таблице нет такого пользователя, мы его создаём и сохраняем все данные.
             Если пользователь есть, то обновляем данные 
         """
-        with open('cfg.cfg', 'rb') as f:
-            file = f.read()
-            print(file)
-        
-        user_id = self.__f.decrypt(file)
-        print(f'[INFO] Дешифровка user_id: {user_id}')
-        user_id = int(user_id)
-        print(user_id)
+        try:
+            with open('cfg.cfg', 'rb') as f:
+                file = f.read()
+                print(file)
+            
+            user_id = self.__f.decrypt(file)
+            print(f'[INFO] Дешифровка user_id: {user_id}')
+            user_id = int(user_id)
+            print(user_id)
+
+        except FileNotFoundError:
+            print('Нет файла сfg.cfg')
+            return ('Нет файла сfg.cfg', False)
 
         if user_id == '':
-            print('[INFO] Пользователь не авторизирован')
-            return ("Пользователь не авторизирован", False)
+            print('[INFO] Файл cfg.cfg пуст')
+            return ("Файл cfg.cfg пуст", False)
     
         dt = datetime.datetime.now()
         dt_string = dt.strftime("%d/%m/%Y %H:%M:%S")
@@ -174,3 +176,24 @@ class DataBase:
         """
             Получаем состояние авторизации пользователя
         """
+        try:
+            with open('cfg.cfg', 'rb') as f:
+                file = f.read()
+                print(file)
+            
+            user_id = self.__f.decrypt(file)
+            print(f'[INFO] Дешифровка user_id: {user_id}')
+            user_id = int(user_id)
+            print(user_id)
+
+        except FileNotFoundError:
+            print('Нет файла сfg.cfg')
+            return ('Нет файла сfg.cfg', False)
+
+        sql = (
+            f"SELECT `state` FROM `avitoreminder`.`user_state` WHERE (`user_id` = '{user_id}')"
+        )
+        self.__cur.execute(sql)
+        res = self.__cur.fetchone()     
+
+        return res   
