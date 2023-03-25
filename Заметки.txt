@@ -1,8 +1,5 @@
-CDvuZAPOVQ-TJDIDp08-1Tm7OGoXOZvEAJ9-mQ4xLLI=
+Ключ CDvuZAPOVQ-TJDIDp08-1Tm7OGoXOZvEAJ9-mQ4xLLI=
 
 self.__key = b'mAJ_0ZIV4Y8FFVx5b-bfBpTNWsqv1hsxt-H5gHvXEYM='
 
 b'mAJ_0ZIV4Y8FFVx5b-bfBpTNWsqv1hsxt-H5gHvXEYM='
-
-Вот здесь зашита 8-ка : 
-    gAAAAABkGckNXoXbv5pGpoWD4ZPShU04cfdesVSCna6zHTRqAy7eGTzz43YPcCP0Ou_Z1QZGqJkqKmzbymdP66QpJPL4ciZrbw==

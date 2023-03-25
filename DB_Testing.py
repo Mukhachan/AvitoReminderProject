@@ -37,21 +37,22 @@ while True:
           )
     x = input('Цыферка: ')
 
-    if x == '1':
+    if x == '1': # create_table #
         print(conn.create_table())
-    elif x == '2':
+    elif x == '2': # db_close #
         print(conn.db_close())
-    elif x == '3':
+        quit()
+    elif x == '3': # create_user #
         email = input('Введите email: ')
         password = input('Введите пароль: ')
         print(conn.create_user(email, password))
-    elif x == '4':
+    elif x == '4': # get_user #
         #email = input('Введите email: ')
         #password = input('Введите пароль: ')     
         email = "aralmuhamet@gmail.com"
         password = "20ArteM06!"   
         print(conn.get_user(email, password))
-    elif x == '5':
+    elif x == '5': # parsing_data_add #
         """        user_id = input("Введите ID юзера: ")
         link = input('Введите ссылку: ')
         title = input('Введите название: ')
@@ -61,10 +62,10 @@ while True:
         title = 'iPhone 13 128Gb Зеленый'
         price = 54990
         print(conn.parsing_data_add(user_id, link, title, price))
-    elif x == '6':
+    elif x == '6': # parsing_data_read #
         id = input('Введите id: ')
         print(conn.parsing_data_read(id))        
-    elif x == '7':
+    elif x == '7': # set_user_state #
         print(conn.set_user_state())
-    elif x == '8':
+    elif x == '8': # get_user_state #
         print(conn.get_user_state())

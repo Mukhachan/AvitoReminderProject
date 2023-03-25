@@ -2,6 +2,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 import datetime
 import pymysql
+import os 
 
 class DataBase:
     def __init__(self, db):
@@ -42,7 +43,7 @@ class DataBase:
         print(ex)
         if ex:
             print(ex)
-            print('Такой пользователь уже зарегестрирован')
+            print('Такой пользователь уже зарегистрирован')
             return False
         
         try:
@@ -52,16 +53,16 @@ class DataBase:
              
             self.__cur.execute(sql_request)
             self.__connection.commit()
+            print('Успешная регистрация')
              # Берём ID юзера #
-            
             self.__cur.execute(f'SELECT id from `avitoreminder`.`users` WHERE email = "{email}"')
             
-            id = bytes(self.__cur.fetchone()['id'])
+            id = str(self.__cur.fetchone()['id'])
 
              # Сохраняем зашифрованый ID в файл #
-            with open('cfg.cfg', 'w') as file:
-                file.write(str(self.__f.encrypt(id)))
-            DataBase.set_user_state(self)
+            with open('cfg.cfg', 'wb') as file:
+                file.write(self.__f.encrypt(id.encode()))
+            DataBase.set_user_state(self, id)
             print("Пользователь добавлен")
             return True
         except pymysql.err as Error:
@@ -88,10 +89,12 @@ class DataBase:
         
         self.__cur.execute(f'SELECT * from `avitoreminder`.`users` WHERE email = "{email}"')
         res = self.__cur.fetchone()
+        id = str(res['id'])
+
         hash_psw = res['password']
         print(hash_psw)
         if check_password_hash(hash_psw, password):
-            DataBase.set_user_state(self)
+            DataBase.set_user_state(self, id)
             print('Успешная авторизация')
             return ("Успешная авторизация", True)
         else:
@@ -126,17 +129,25 @@ class DataBase:
         except:
             print('Ошибка при чтении БД (parsing_data)')
           
-    def set_user_state(self) -> tuple:
+    def set_user_state(self, id: str) -> tuple:
         """
             Устанавливаем состояние авторизации пользователя.
-            Если не найден файл cfg.cfg, то мы возвращаем false в приложение и вызываем окно авторизации
+            Если не найден файл cfg.cfg, то мы его создаём.
             Если в таблице нет такого пользователя, мы его создаём и сохраняем все данные.
             Если пользователь есть, то обновляем данные 
         """
+
+            # Сохраняем зашифрованый ID в файл #
+        with open('cfg.cfg', 'wb') as file:
+            file.write(self.__f.encrypt(id.encode()))
+        
+        
         try:
-            with open('cfg.cfg', 'rb') as f:
+            with open('cfg.cfg', 'r') as f:
                 file = f.read()
                 print(file)
+                if file == b'' or file == '':
+                    return ('Файл cfg.cfg пуст', False)
             
             user_id = self.__f.decrypt(file)
             print(f'[INFO] Дешифровка user_id: {user_id}')

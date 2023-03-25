@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS `avitoreminder`.`user_state`(
     id int NOT NULL AUTO_INCREMENT,
     user_id integer NOT NULL,
     state text NOT NULL,
-    last_online NOT NULL,
-    last_auth NOT NULL
+    last_online text NOT NULL,
+    last_auth text NOT NULL,
     PRIMARY KEY (id) 
 )
