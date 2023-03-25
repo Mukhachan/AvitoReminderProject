@@ -47,10 +47,9 @@ while True:
         password = input('Введите пароль: ')
         print(conn.create_user(email, password))
     elif x == '4': # get_user #
-        #email = input('Введите email: ')
-        #password = input('Введите пароль: ')     
-        email = "aralmuhamet@gmail.com"
-        password = "20ArteM06!"   
+        email = input('Введите email: ')
+        password = input('Введите пароль: ')     
+   
         print(conn.get_user(email, password))
     elif x == '5': # parsing_data_add #
         """        user_id = input("Введите ID юзера: ")
