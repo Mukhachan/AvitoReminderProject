@@ -234,3 +234,12 @@ class DataBase:
             DataBase.create_start_code()
 
         return code
+    
+    def get_start_code(self, id: int) -> str: # Получаем старт код из бд # 
+
+        sql = (
+            f'SELECT bot_key FROM `avitoreminder`.`users` WHERE id = {id};'
+        )
+        self.__cur.execute(sql)
+        res = self.__cur.fetchone()['bot_key']
+        return res
