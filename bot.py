@@ -14,13 +14,14 @@ dp = Dispatcher(bot)
 @dp.message_handler(commands=['start'])
 async def start(message: types.Message):
     message_text = message.text
-    message_text_split = message_text.split()
+    start_code = message_text.split()
     try:
-        if message_text_split[1] == "dev":
+        if start_code[1] == "dev":
             await message.answer("разрабы идут нахуй")
-        elif message_text_split[1] == "444555666":
-            '''Сравнение спецсимволов с бд для привязки пользователя к чату'''
+        elif start_code[1] == "444555666":
             await message.answer('Вы успешно вошли в бд под логином "Paul"') #после правок имя сменится на переменную
+        else:
+            # Проверка наличия юзер кода в бд
     except:
         await message.answer("Вы не зарегестрированны, зайдите по своей персональной ссылке")
 
