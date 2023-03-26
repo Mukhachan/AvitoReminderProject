@@ -254,10 +254,12 @@ class DataBase:
         self.__cur.execute(sql)
         id = self.__cur.fetchone()['id'] # Сохраняем ID #
 
-         # Обновляем запись с пользователем и записываем в bot_key id чата в телеграмме #
+         # Обновляем запись с пользователем и записываем в bot_key лid чата в телеграмме #
         sql = (
             f'UPDATE `avitoreminder`.`users` SET `bot_key`="{tg_id}" WHERE (`id` = {id});'
         )
         self.__cur.execute(sql)
         self.__connection.commit()
+
+        return id
         
