@@ -190,13 +190,16 @@ class DataBase:
         try:
             with open('cfg.cfg', 'rb') as f:
                 file = f.read()
-                print(file)
+                print(file, type(file))
             
+            if file == b'':
+                return ('Файл cfg.cfg пуст', False)
+
             user_id = self.__f.decrypt(file)
             print(f'[INFO] Дешифровка user_id: {user_id}')
             user_id = int(user_id)
-            print(user_id)
-
+            print(user_id, type(user_id))
+        
         except FileNotFoundError:
             print('Нет файла сfg.cfg')
             return ('Нет файла сfg.cfg', False)
