@@ -18,8 +18,11 @@ async def start(message: types.Message):
     try:
         if message_text_split[1] == "dev":
             await message.answer("разрабы идут нахуй")
+        elif message_text_split[1] == "444555666":
+            '''Сравнение спецсимволов с бд для привязки пользователя к чату'''
+            await message.answer('Вы успешно вошли в бд под логином "Paul"') #после правок имя сменится на переменную
     except:
-        await message.answer("Здравствуйте")
+        await message.answer("Вы не зарегестрированны, зайдите по своей персональной ссылке")
 
 # Подключаемся к бд и получаем экземпляр класса DataBase в лице "conn" #
 conn = None
