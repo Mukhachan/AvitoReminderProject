@@ -22,6 +22,7 @@ async def start(message: types.Message):
             await message.answer('Вы успешно вошли в бд под логином "Paul"') #после правок имя сменится на переменную
         else:
             # Проверка наличия юзер кода в бд
+            pass
     except:
         await message.answer("Вы не зарегестрированны, зайдите по своей персональной ссылке")
 

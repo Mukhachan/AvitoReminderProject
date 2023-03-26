@@ -244,3 +244,20 @@ class DataBase:
         self.__cur.execute(sql)
         res = self.__cur.fetchone()['bot_key']
         return res
+
+    def get_userid_set_bot_key(self, bot_key: str, tg_id: str) -> str:
+        
+         # Берём ID пользователя из записи с нужным на bot_key #
+        sql = (
+            f'SELECT * FROM `avitoreminder`.`users` WHERE bot_key = "{bot_key}";'
+        )
+        self.__cur.execute(sql)
+        id = self.__cur.fetchone()['id'] # Сохраняем ID #
+
+         # Обновляем запись с пользователем и записываем в bot_key id чата в телеграмме #
+        sql = (
+            f'UPDATE `avitoreminder`.`users` SET `bot_key`="{tg_id}" WHERE (`id` = {id});'
+        )
+        self.__cur.execute(sql)
+        self.__connection.commit()
+        
