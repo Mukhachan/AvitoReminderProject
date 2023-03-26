@@ -1,4 +1,4 @@
-import config
+from config import host, user, password, db_name, BOT_TOKEN
 from datetime import *
 from aiogram import Bot, Dispatcher, types, executor
 import asyncio
@@ -6,8 +6,9 @@ import aiogram
 import time
 import pymysql
 import pymysql.cursors
+from DataBase import DataBase
 
-bot = Bot(token=config.BOT_API_TOKEN)
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
 @dp.message_handler(commands=['start'])
