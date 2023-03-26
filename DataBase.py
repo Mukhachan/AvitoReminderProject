@@ -49,8 +49,8 @@ class DataBase:
         
         try:
              # Создаём запись в таблице users #
-            
-            sql_request = f'INSERT INTO `avitoreminder`.`users` (email, password) VALUES ("{email}", "{password}")'
+            code = DataBase.create_start_code()
+            sql_request = f'INSERT INTO `avitoreminder`.`users` (email, password, bot_key) VALUES ("{email}", "{password}", "{code}")'
              
             self.__cur.execute(sql_request)
             self.__connection.commit()
