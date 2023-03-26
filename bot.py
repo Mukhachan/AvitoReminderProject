@@ -1,10 +1,24 @@
-from DataBase import DataBase
-from config import host, user, password, db_name
+import config
 from datetime import *
+from aiogram import Bot, Dispatcher, types, executor
 import asyncio
 import aiogram
+import time
 import pymysql
 import pymysql.cursors
+
+bot = Bot(token=config.BOT_API_TOKEN)
+dp = Dispatcher(bot)
+
+@dp.message_handler(commands=['start'])
+async def start(message: types.Message):
+    message_text = message.text
+    message_text_split = message_text.split()
+    try:
+        if message_text_split[1] == "dev":
+            await message.answer("разрабы идут нахуй")
+    except:
+        await message.answer("Здравствуйте")
 
 # Подключаемся к бд и получаем экземпляр класса DataBase в лице "conn" #
 conn = None
@@ -60,3 +74,6 @@ async def check_database_changes():
 loop = asyncio.get_event_loop()
 loop.create_task(check_database_changes())
 loop.run_forever()
+
+if __name__ == '__main__':
+    executor.start_polling(dp, skip_updates=True)
