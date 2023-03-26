@@ -34,6 +34,7 @@ while True:
           "(6). parsing_data_read(self, id: int) -> list\n",
           "(7). set_user_state(self) -> tuple\n",
           "(8). get_user_state(self) -> str\n",
+          "(9). create_start_code(self, id: int) -> str:\n"
           )
     x = input('Цыферка: ')
 
@@ -68,3 +69,5 @@ while True:
         print(conn.set_user_state())
     elif x == '8': # get_user_state #
         print(conn.get_user_state())
+    elif x == '9': # create_start_code #
+        print(conn.create_start_code())

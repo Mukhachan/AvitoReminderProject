@@ -1,8 +1,9 @@
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
+from random import choice
+import string
 import datetime
 import pymysql
-import os 
 
 class DataBase:
     def __init__(self, db): # Инициализация глобальных переменных # 
@@ -211,3 +212,25 @@ class DataBase:
         res = self.__cur.fetchone()     
 
         return res   
+
+    def create_start_code(self) -> str: # Создание старт кода для бота #
+
+        def gen_code():    
+            length = 8
+            letters = string.ascii_lowercase
+            return ''.join(choice(letters) for i in range(length))
+        code = gen_code()
+        
+        def db_req(code):
+            sql = (
+                f'SELECT * FROM `avitoreminder`.`users` WHERE bot_key = "{code}";'
+            )
+            self.__cur.execute(sql)
+            return self.__cur.fetchall()
+        res = db_req(code)
+
+        print(res)
+        if res:
+            DataBase.create_start_code()
+
+        return code
