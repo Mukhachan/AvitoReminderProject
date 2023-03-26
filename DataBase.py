@@ -1,6 +1,7 @@
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 from random import choice
+from config import CRYPT_KEY
 import string
 import datetime
 import pymysql
@@ -9,7 +10,7 @@ class DataBase:
     def __init__(self, db): # Инициализация глобальных переменных # 
         self.__connection = db # Подключаемся к бд #
         self.__cur = db.cursor() # Курсор для запросов в бд # 
-        self.__key = b'mAJ_0ZIV4Y8FFVx5b-bfBpTNWsqv1hsxt-H5gHvXEYM=' # Ключ для шифровки файла cfg #
+        self.__key = CRYPT_KEY # Ключ для шифровки файла cfg #
         self.__f = Fernet(self.__key) # Экземпляр класс Fernet #
 
     def create_table(self) -> bool: # Функция для создания таблиц #
