@@ -5,26 +5,26 @@ import pymysql
 import os 
 
 class DataBase:
-    def __init__(self, db):
-        self.__connection = db
-        self.__cur = db.cursor()
-        self.__key = b'mAJ_0ZIV4Y8FFVx5b-bfBpTNWsqv1hsxt-H5gHvXEYM='
-        self.__f = Fernet(self.__key)
+    def __init__(self, db): # Инициализация глобальных переменных # 
+        self.__connection = db # Подключаемся к бд #
+        self.__cur = db.cursor() # Курсор для запросов в бд # 
+        self.__key = b'mAJ_0ZIV4Y8FFVx5b-bfBpTNWsqv1hsxt-H5gHvXEYM=' # Ключ для шифровки файла cfg #
+        self.__f = Fernet(self.__key) # Экземпляр класс Fernet #
 
-    def create_table(self) -> bool:
+    def create_table(self) -> bool: # Функция для создания таблиц #
         '''Вспомогательная функция для создания таблиц бд'''
         try:
             db = self.__connection
             with open('sq_db.sql', mode='r') as f:
-                self.__cur.executescript(f.read())
-            db.commit()
-            db.close()
+                self.__cur.executescript(f.read()) # Выполняем запрос к бд #
+            db.commit() # Сохраняем  #
+            db.close() # Закрываем бд #
             print('Таблица создана')
             return True  
         except:    
             return False  
 
-    def db_close(self) -> bool:
+    def db_close(self) -> bool: # Закрытие БД #
         try:
             print('[INFO] Закрытие соединения с БД MYSQL')
             self.__connection.close()
@@ -33,7 +33,7 @@ class DataBase:
             print('[INFO] Не удалось закрыть БД')
             return False
 
-    def create_user(self, email: str, password: str) -> bool:
+    def create_user(self, email: str, password: str) -> bool: # Функция для регистрации пользователя #
         """ Эта функция служит для создания пользователя """
 
         # хешируем пароль #
@@ -47,7 +47,7 @@ class DataBase:
             return False
         
         try:
-            """ Создаём запись в таблице users """
+             # Создаём запись в таблице users #
             
             sql_request = f'INSERT INTO `avitoreminder`.`users` (email, password) VALUES ("{email}", "{password}")'
              
@@ -70,7 +70,7 @@ class DataBase:
             print(Error)
             return False
         
-    def get_user(self, email: str, password: str) -> tuple:
+    def get_user(self, email: str, password: str) -> tuple: # Авторизация пользователя #
         """
             Функция авторизации пользователя. Возвращает кортеж в виде("описание", bool). 
                 Есть пользователь или нет.
@@ -101,7 +101,7 @@ class DataBase:
             print("Неверный пароль")
             return("Неверный пароль", False)
 
-    def parsing_data_add(self, user_id: int, link: str, title: str, price: int) -> list:
+    def parsing_data_add(self, user_id: int, link: str, title: str, price: int) -> list: # Добавление в parsing data #
         """ 
         Функция используется для добавления данных в таблицу parsing_data, после парсинга Авито
         """
@@ -115,7 +115,7 @@ class DataBase:
         except:
             print('[INFO] Возникла ошибка при добавлении данных в таблицу parsing_data')
  
-    def parsing_data_read(self, id: int) -> list:
+    def parsing_data_read(self, id: int) -> list: # Чтение из parsing_data #
         """
             Собираем все данные с таблицы parsing_data
             Возвращает список из словарей
@@ -129,7 +129,7 @@ class DataBase:
         except:
             print('Ошибка при чтении БД (parsing_data)')
           
-    def set_user_state(self, id: str) -> tuple:
+    def set_user_state(self, id: str) -> tuple: # Установка состояния авторизации #
         """
             Устанавливаем состояние авторизации пользователя.
             Если не найден файл cfg.cfg, то мы его создаём.
@@ -183,7 +183,7 @@ class DataBase:
         self.__connection.commit()
         print('Данные о состоянии успешно обновлены')
 
-    def get_user_state(self) -> str:
+    def get_user_state(self) -> str: # Чтение состояния авторизации #
         """
             Получаем состояние авторизации пользователя
         """
