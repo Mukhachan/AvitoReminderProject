@@ -245,7 +245,7 @@ class DataBase:
         res = self.__cur.fetchone()['bot_key']
         return res
 
-    def get_userid_set_bot_key(self, bot_key: str, tg_id: str) -> int:
+    def get_userid_set_bot_key(self, bot_key: str, tg_id: str) -> int: # Получаем user_id и сохраняем id чата #
         
          # Берём ID пользователя из записи с нужным на bot_key #
         sql = (
