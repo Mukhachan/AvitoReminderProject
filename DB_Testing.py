@@ -77,6 +77,6 @@ while True:
         id = int(input())
         print(conn.get_start_code(id))
     elif x == '11': # get_userid_set_bot_key #
-        bot_key = input()
-        tg_id = input()
-        print(conn.get_userid_set_bot_key())
+        bot_key = input('bot_key: ')
+        tg_id = input('tg_id: ')
+        print(conn.get_userid_set_bot_key(bot_key, tg_id))

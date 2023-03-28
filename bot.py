@@ -50,7 +50,11 @@ async def start(message: types.Message):
             else:
                 # Проверка наличия юзер кода в бд
                 await message.answer(f'Ваш чат ID: {chat_id}')
-                #conn.get_userid_set_bot_key(bot_key=start_code, tg_id=chat_id) # ОНО НЕ РАБОТАЕТ #
+                x = conn.get_userid_set_bot_key(bot_key=start_code, tg_id=chat_id) # ОНО РАБОТАЕТ !!!#
+                if x[1] == True:
+                    await message.answer(f'Бот успешно привязан!')
+                elif x[1] == False:
+                    await message.answer(f'{x[0]}')
         except Exception as e:
             print(e)
             await message.answer("Вы не зарегестрированны, зайдите по своей персональной ссылке")
@@ -88,6 +92,6 @@ if __name__ == '__main__':
     print(conn)
     loop = asyncio.get_event_loop()
     loop.create_task(executor.start_polling(dp, skip_updates=True))
-    loop.run_forever()
+    
     
     print('Ну и пошёл нахуй, пидор')
