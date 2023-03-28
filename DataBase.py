@@ -1,7 +1,7 @@
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 from random import choice
-from config import CRYPT_KEY
+from config import crypt_key
 import string
 import datetime
 import pymysql
@@ -10,7 +10,7 @@ class DataBase:
     def __init__(self, db): # Инициализация глобальных переменных # 
         self.__connection = db # Подключаемся к бд #
         self.__cur = db.cursor() # Курсор для запросов в бд # 
-        self.__key = CRYPT_KEY # Ключ для шифровки файла cfg #
+        self.__key = crypt_key # Ключ для шифровки файла cfg #
         self.__f = Fernet(self.__key) # Экземпляр класс Fernet #
 
     def create_table(self) -> bool: # Функция для создания таблиц #
@@ -246,6 +246,9 @@ class DataBase:
         return res
 
     def get_userid_set_bot_key(self, bot_key: str, tg_id: str) -> int: # Получаем user_id и сохраняем id чата #
+        """
+            Получает на вход старткод и ID чата. записывает вместо ячейки bot_key, ID чата в тг
+        """
         
          # Берём ID пользователя из записи с нужным на bot_key #
         sql = (
@@ -253,7 +256,7 @@ class DataBase:
         )
         self.__cur.execute(sql)
         id = self.__cur.fetchone()['id'] # Сохраняем ID #
-
+        
          # Обновляем запись с пользователем и записываем в bot_key лid чата в телеграмме #
         sql = (
             f'UPDATE `avitoreminder`.`users` SET `bot_key`="{tg_id}" WHERE (`id` = {id});'
