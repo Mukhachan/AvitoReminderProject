@@ -131,6 +131,33 @@ class DataBase:
         except:
             print('Ошибка при чтении БД (parsing_data)')
           
+    def set_request(self, user_id: int, title: str, price: int | None, 
+                    add_description: str | None, exception: str | None ) -> tuple: # Добавление запроса для Авито #
+        """
+            Добавляем в таблицу requests данные для парсинга
+        """
+        try:
+            self.__cur.execute(
+                f'INSERT INTO `avitoreminder`.`requests` VALUES (NULL, {user_id}, "{title}", {price}, "{add_description}", "{exception}")'
+            )
+            self.__connection.commit()
+            print("[INFO] Запрос успешно создан")
+        except Exception as e:
+            print('Возникла ошибка при добавлении')
+            print(e)
+    def get_requests(self) -> list: # Список запросов для авито #
+        """
+            Возвращает огромный список из словарей с запросами для Авито
+        """
+        try:
+            self.__cur.execute(
+                f'SELECT * FROM `avitoreminder`.`requests`'
+            )
+            res = self.__cur.fetchall()
+            return res if res else None
+        except:
+            print('Ошибка при чтении БД (requests)')
+
     def set_user_state(self, id: str) -> tuple: # Установка состояния авторизации #
         """
             Устанавливаем состояние авторизации пользователя.
