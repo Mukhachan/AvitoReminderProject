@@ -145,6 +145,7 @@ class DataBase:
         except Exception as e:
             print('Возникла ошибка при добавлении')
             print(e)
+
     def get_requests(self) -> list: # Список запросов для авито #
         """
             Возвращает огромный список из словарей с запросами для Авито
@@ -297,4 +298,3 @@ class DataBase:
         self.__connection.commit()
 
         return (id, True)
-        
