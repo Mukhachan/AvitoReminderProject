@@ -74,7 +74,7 @@ while True:
         add_description = input('Добавить в описание: ')
         exception = input('Исключить из описания: ')
         conn.set_request(user_id, title, price, add_description, exception)
-    elif x == '8':
+    elif x == '8': # get_requests #
         print(conn.get_requests())
     elif x == '9': # set_user_state #
         print(conn.set_user_state())
