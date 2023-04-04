@@ -7,7 +7,7 @@ import datetime
 import pymysql
 
 class DataBase:
-    def __init__(self, db): # Инициализация глобальных переменных # 
+    def __init__(self, db) -> None: # Инициализация глобальных переменных # 
         self.__connection = db # Подключаемся к бд #
         self.__cur = db.cursor() # Курсор для запросов в бд # 
         self.__key = crypt_key # Ключ для шифровки файла cfg #

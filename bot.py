@@ -84,7 +84,7 @@ async def check_database_changes():
             print(e)
 
         # Ждём 1 час перед повторной проверкой базы данных
-        await asyncio.sleep(3600)
+        await asyncio.sleep(1800)
 
 if __name__ == '__main__':
     print('Бот запущен')
@@ -92,6 +92,5 @@ if __name__ == '__main__':
     print(conn)
     loop = asyncio.get_event_loop()
     loop.create_task(executor.start_polling(dp, skip_updates=True))
-    
-    
+
     print('Ну и пошёл нахуй, пидор')
