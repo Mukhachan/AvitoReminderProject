@@ -59,7 +59,14 @@ async def start(message: types.Message):
             print(e)
             await message.answer("Вы не зарегестрированны, зайдите по своей персональной ссылке")
 
+async def send_message():
+    await bot.send_message(chat_id=id.chat, "нужная функция")
+async def schedule_handler(message: types.Message):
+    while True:
+        asyncio.create_task(send_message())
+        await asyncio.sleep(3600)
 
+dp.register_message_handler(schedule_handler, commands=["schedule"])
 """
 Теперь для подключения к бд надо вызвать функцию db_connect(). 
 А если надо вызвать какой то метод из класса DataBase, пишешь conn.`название функции(аргументы)`
