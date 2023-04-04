@@ -36,7 +36,8 @@ while True:
           "(10). get_user_state(self) -> str\n",
           "(11). create_start_code(self, id: int) -> str:\n",
           "(12). get_start_code(self, id: int) -> str:\n",
-          "(13). get_userid_set_bot_key(self, bot_key: str, tg_id: str) -> int\n"
+          "(13). get_userid_by_bot_key(self, bot_key: str) -> int\n",
+          "(14). set_bot_key(self, bot_key: str, tg_id: str) -> int\n"
           )
     x = input('Цыферка: ')
 
@@ -85,7 +86,10 @@ while True:
     elif x == '12': # get_start_code #
         id = int(input())
         print(conn.get_start_code(id))
-    elif x == '13': # get_userid_set_bot_key #
+    elif x == '13': # get_userid_by_bot_key #
+        bot_key = input('bot_key: ')
+        print(conn.get_userid_by_bot_key(bot_key))
+    elif x == '14': # set_bot_key #
         bot_key = input('bot_key: ')
         tg_id = input('tg_id: ')
-        print(conn.get_userid_set_bot_key(bot_key, tg_id))
+        print(conn.set_bot_key(bot_key, tg_id))

@@ -273,12 +273,9 @@ class DataBase:
         res = self.__cur.fetchone()['bot_key']
         return res
 
-    def get_userid_set_bot_key(self, bot_key: str, tg_id: str) -> tuple: # Получаем user_id и сохраняем id чата #
-        """
-            Получает на вход старткод и ID чата. записывает вместо ячейки bot_key, ID чата в тг
-        """
-        
-         # Берём ID пользователя из записи с нужным на bot_key #
+    def get_userid_by_bot_key(self, bot_key: str) -> int: # получаем user_id с помощью bot_key #
+        """ Берём ID пользователя из записи с нужным на bot_key """
+
         sql = (
             f'SELECT * FROM `avitoreminder`.`users` WHERE bot_key = "{bot_key}";'
         )
@@ -287,8 +284,14 @@ class DataBase:
         if fetch == None:
             print('fetch -', fetch)
             return ('Такой Bot_key не найден в бд', False)
+        return fetch["id"]
 
-        id = fetch['id'] # Сохраняем ID #
+    def set_bot_key(self, bot_key: str, tg_id: str) -> tuple: # сохраняем id чата #
+        """
+            Получает на вход старткод и ID чата. записывает вместо ячейки bot_key, ID чата в тг
+        """
+
+        id = DataBase.get_userid_by_bot_key(self, bot_key) # Сохраняем ID #
 
          # Обновляем запись с пользователем и записываем в bot_key лid чата в телеграмме #
         sql = (

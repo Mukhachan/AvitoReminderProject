@@ -5,10 +5,12 @@ import asyncio
 import aiogram
 import pymysql
 import pymysql.cursors
+
 from DataBase import DataBase
+from backend import AvitoRequest
 
 # Подключаемся к бд и получаем экземпляр класса DataBase в лице "conn" #
-
+parser = AvitoRequest
 def db_connect():
     try:
         db = pymysql.connect(
@@ -29,8 +31,10 @@ def db_connect():
 bot = Bot(token=bot_api_token)
 dp = Dispatcher(bot)
 
+chat_id = None
 @dp.message_handler(commands=['start'])
 async def start(message: types.Message):
+    global chat_id 
     start_code = message.text.split()
     chat_id = str(message.chat.id)
     
@@ -50,7 +54,9 @@ async def start(message: types.Message):
             else:
                 # Проверка наличия юзер кода в бд
                 await message.answer(f'Ваш чат ID: {chat_id}')
-                x = conn.get_userid_set_bot_key(bot_key=start_code, tg_id=chat_id) # ОНО РАБОТАЕТ !!!#
+                x = conn.get_userid_by_bot_key(bot_key=start_code)
+                x = conn.set_bot_key(tg_id=chat_id)
+
                 if x[1] == True:
                     await message.answer(f'Бот успешно привязан!')
                 elif x[1] == False:
@@ -60,11 +66,15 @@ async def start(message: types.Message):
             await message.answer("Вы не зарегестрированны, зайдите по своей персональной ссылке")
 
 async def send_message():
-    await bot.send_message(chat_id=id.chat, "нужная функция")
+    requests = conn.get_requests()
+    # Вызываем парсер и передаём туда список с запросами и количество потоков #
+    text = await parser.main(requests=requests, cores=1) 
+    await bot.send_message(chat_id = chat_id, text = text)
+
 async def schedule_handler(message: types.Message):
     while True:
-        asyncio.create_task(send_message())
-        await asyncio.sleep(3600)
+        await asyncio.create_task(send_message())
+        await asyncio.sleep(30)
 
 dp.register_message_handler(schedule_handler, commands=["schedule"])
 """
