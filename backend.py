@@ -9,5 +9,5 @@ class AvitoRequest:
 
     async def parser(request: dict) -> tuple:
         pass
-    async def main(requests: list, cores: int) -> function:
+    async def main(cores: int) -> bool:
         print('Парсер запустился')

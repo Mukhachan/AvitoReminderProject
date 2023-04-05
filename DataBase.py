@@ -5,15 +5,16 @@ from config import crypt_key
 import string
 import datetime
 import pymysql
+import asyncio
 
 class DataBase:
-    def __init__(self, db) -> None: # Инициализация глобальных переменных # 
+    async def __init__(self, db) -> None: # Инициализация глобальных переменных # 
         self.__connection = db # Подключаемся к бд #
         self.__cur = db.cursor() # Курсор для запросов в бд # 
         self.__key = crypt_key # Ключ для шифровки файла cfg #
         self.__f = Fernet(self.__key) # Экземпляр класс Fernet #
 
-    def create_table(self) -> bool: # Функция для создания таблиц #
+    async def create_table(self) -> bool: # Функция для создания таблиц #
         '''Вспомогательная функция для создания таблиц бд'''
         try:
             db = self.__connection
@@ -26,7 +27,7 @@ class DataBase:
         except:    
             return False  
 
-    def db_close(self) -> bool: # Закрытие БД #
+    async def db_close(self) -> bool: # Закрытие БД #
         try:
             print('[INFO] Закрытие соединения с БД MYSQL')
             self.__connection.close()
@@ -35,7 +36,7 @@ class DataBase:
             print('[INFO] Не удалось закрыть БД')
             return False
 
-    def create_user(self, email: str, password: str) -> bool: # Функция для регистрации пользователя #
+    async def create_user(self, email: str, password: str) -> bool: # Функция для регистрации пользователя #
         """ Эта функция служит для создания пользователя """
 
         # хешируем пароль #
@@ -72,7 +73,7 @@ class DataBase:
             print(Error)
             return False
         
-    def get_user(self, email: str, password: str) -> tuple: # Авторизация пользователя #
+    async def get_user(self, email: str, password: str) -> tuple: # Авторизация пользователя #
         """
             Функция авторизации пользователя. Возвращает кортеж в виде("описание", bool). 
                 Есть пользователь или нет.
@@ -103,21 +104,21 @@ class DataBase:
             print("Неверный пароль")
             return("Неверный пароль", False)
 
-    def parsing_data_add(self, user_id: int, link: str, title: str, price: int) -> list: # Добавление в parsing data #
+    async def parsing_data_add(self, user_id: int, link: str, title: str, price: int, state: str) -> list: # Добавление в parsing data #
         """ 
         Функция используется для добавления данных в таблицу parsing_data, после парсинга Авито
         """
 
         try:
             self.__cur.execute(
-            f'INSERT INTO `avitoreminder`.`parsing_data` VALUES (NULL, "{user_id}", "{link}", "{title}", "{price}")'
+            f'INSERT INTO `avitoreminder`.`parsing_data` VALUES (NULL, "{user_id}", "{link}", "{title}", "{price}", "{state}")'
                )
             self.__connection.commit()
             print("[INFO] Данные успешно добавлены")
         except:
             print('[INFO] Возникла ошибка при добавлении данных в таблицу parsing_data')
  
-    def parsing_data_read(self, id: int) -> list: # Чтение из parsing_data #
+    async def parsing_data_read(self, id: int) -> list: # Чтение из parsing_data #
         """
             Собираем все данные с таблицы parsing_data
             Возвращает список из словарей
@@ -131,7 +132,7 @@ class DataBase:
         except:
             print('Ошибка при чтении БД (parsing_data)')
           
-    def set_request(self, user_id: int, title: str, price: int | None, 
+    async def set_request(self, user_id: int, title: str, price: int | None, 
                     add_description: str | None, exception: str | None ) -> tuple: # Добавление запроса для Авито #
         """
             Добавляем в таблицу requests данные для парсинга
@@ -146,7 +147,7 @@ class DataBase:
             print('Возникла ошибка при добавлении')
             print(e)
 
-    def get_requests(self) -> list: # Список запросов для авито #
+    async def get_requests(self) -> list: # Список запросов для авито #
         """
             Возвращает огромный список из словарей с запросами для Авито
         """
@@ -159,7 +160,7 @@ class DataBase:
         except:
             print('Ошибка при чтении БД (requests)')
 
-    def set_user_state(self, id: str) -> tuple: # Установка состояния авторизации #
+    async def set_user_state(self, id: str) -> tuple: # Установка состояния авторизации #
         """
             Устанавливаем состояние авторизации пользователя.
             Если не найден файл cfg.cfg, то мы его создаём.
@@ -213,7 +214,7 @@ class DataBase:
         self.__connection.commit()
         print('Данные о состоянии успешно обновлены')
 
-    def get_user_state(self) -> str: # Чтение состояния авторизации #
+    async def get_user_state(self) -> str: # Чтение состояния авторизации #
         """
             Получаем состояние авторизации пользователя
         """
@@ -242,7 +243,7 @@ class DataBase:
 
         return res   
 
-    def create_start_code(self) -> str: # Создание старт кода для бота #
+    async def create_start_code(self) -> str: # Создание старт кода для бота #
 
         def gen_code():    
             length = 8
@@ -264,8 +265,9 @@ class DataBase:
 
         return code
     
-    def get_start_code(self, id: int) -> str: # Получаем старт код из бд # 
-
+    async def get_bot_key(self, id: int) -> str: # Получаем бот кей из бд # 
+        """ Передаём bot_key из бд c помощью ID 
+        """
         sql = (
             f'SELECT bot_key FROM `avitoreminder`.`users` WHERE id = {id};'
         )
@@ -273,7 +275,7 @@ class DataBase:
         res = self.__cur.fetchone()['bot_key']
         return res
 
-    def get_userid_by_bot_key(self, bot_key: str) -> int: # получаем user_id с помощью bot_key #
+    async def get_userid_by_bot_key(self, bot_key: str) -> int: # получаем user_id с помощью bot_key #
         """ Берём ID пользователя из записи с нужным на bot_key """
 
         sql = (
@@ -286,7 +288,7 @@ class DataBase:
             return ('Такой Bot_key не найден в бд', False)
         return fetch["id"]
 
-    def set_bot_key(self, bot_key: str, tg_id: str) -> tuple: # сохраняем id чата #
+    async def set_bot_key(self, bot_key: str, tg_id: str) -> tuple: # сохраняем id чата #
         """
             Получает на вход старткод и ID чата. записывает вместо ячейки bot_key, ID чата в тг
         """
@@ -301,3 +303,14 @@ class DataBase:
         self.__connection.commit()
 
         return (id, True)
+    
+    async def update_parsing_state(self, id: int, state: str) -> tuple:
+        """
+            Получает на вход id записи в parsing_data и состояние на которое надо изменить
+        """
+        sql = (
+            f'UPDATE `avitoreminder`.`parsing_data` SET `state`="{state}" WHERE (`id` = {id});'
+        )
+        self.__cur.execute(sql)
+        self.__connection.commit()
+        return ('Всё поменяли', True)

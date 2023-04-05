@@ -2,7 +2,7 @@ from config import host, user, password, db_name, bot_api_token
 from datetime import *
 from aiogram import Bot, Dispatcher, types, executor
 import asyncio
-import aiogram
+
 import pymysql
 import pymysql.cursors
 
@@ -65,49 +65,43 @@ async def start(message: types.Message):
             print(e)
             await message.answer("Вы не зарегестрированны, зайдите по своей персональной ссылке")
 
-async def send_message():
-    requests = conn.get_requests()
-    # Вызываем парсер и передаём туда список с запросами и количество потоков #
-    text = await parser.main(requests=requests, cores=1) 
-    await bot.send_message(chat_id = chat_id, text = text)
+
+async def parsing_data_filter(requests: list) -> bool:
+    """ Функция фильтрации передаём туда список с запросами
+        requests это список из словарей
+    """
+
+    async for i in requests:
+        if i['state'] == 'added':
+            chat_id = await conn.get_bot_key(i['user_id'])
+            text = 'Появились новые товары среди ваших отслеживаемых!\n', i['title'], i['price'], i['link']
+            await bot.send_message(chat_id=chat_id, text=text)
+            await conn.update_parsing_state(id = i['id'], state='sent')
+        elif i['state'] == 'sent':
+            print(str(i['id']), 'Уже отправлялась ранее')
+
+
+async def send_message():    
+    await parser.main(cores=1) # Вызываем парсер и передаём количество потоков #
+    # Вызываем функцию фильтрации, передаём данные из paring_data #
+     
+    await parsing_data_filter(requests = conn.parsing_data_read()) 
 
 async def schedule_handler(message: types.Message):
     while True:
         await asyncio.create_task(send_message())
-        await asyncio.sleep(30)
+        await asyncio.sleep(2700)
 
 dp.register_message_handler(schedule_handler, commands=["schedule"])
+
+
 """
 Теперь для подключения к бд надо вызвать функцию db_connect(). 
 А если надо вызвать какой то метод из класса DataBase, пишешь conn.`название функции(аргументы)`
 """
-
-async def check_database_changes():
-    print('Расписание запущено')
-    while True:
-        try:
-            # Отправить запрос на получение времени последнего изменения
-            
-            """
-            # Сравнить время последнего изменения с текущим временем
-            if last_updated >= datetime.now() - timedelta(hours=1):
-                # Отправить уведомление через Telegram API
-                bot = aiogram.Bot("TOKEN")
-                await bot.send_message(chat_id="CHAT_ID", text="База данных была изменена!")
-            """
-            
-        except (pymysql.DatabaseError, aiogram.exceptions.TelegramAPIError) as e:
-            # Обрабатывать ошибки
-            print(e)
-
-        # Ждём 1 час перед повторной проверкой базы данных
-        await asyncio.sleep(1800)
-
 if __name__ == '__main__':
     print('Бот запущен')
     conn = db_connect()
     print(conn)
     loop = asyncio.get_event_loop()
     loop.create_task(executor.start_polling(dp, skip_updates=True))
-
-    print('Ну и пошёл нахуй, пидор')
