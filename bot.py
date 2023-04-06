@@ -9,6 +9,8 @@ import pymysql.cursors
 from DataBase import DataBase
 from backend import AvitoRequest
 
+CORES = 1
+
 # Подключаемся к бд и получаем экземпляр класса DataBase в лице "conn" #
 parser = AvitoRequest
 def db_connect():
@@ -31,10 +33,9 @@ def db_connect():
 bot = Bot(token=bot_api_token)
 dp = Dispatcher(bot)
 
-chat_id = None
+
 @dp.message_handler(commands=['start'])
 async def start(message: types.Message):
-    global chat_id 
     start_code = message.text.split()
     chat_id = str(message.chat.id)
     
@@ -70,27 +71,26 @@ async def parsing_data_filter(requests: list) -> bool:
     """ Функция фильтрации передаём туда список с запросами
         requests это список из словарей
     """
-
-    async for i in requests:
+    async for i in requests: # Перебираем все словари(записи) и фильтруем #  
         if i['state'] == 'added':
-            chat_id = await conn.get_bot_key(i['user_id'])
+            chat_id = await conn.get_bot_key(i['user_id']) # Получаем id чата в который надо отправить запись #
             text = 'Появились новые товары среди ваших отслеживаемых!\n', i['title'], i['price'], i['link']
-            await bot.send_message(chat_id=chat_id, text=text)
-            await conn.update_parsing_state(id = i['id'], state='sent')
+
+            await bot.send_message(chat_id=chat_id, text=text) # отправляем сообщение юзеру #
+            
+            await conn.update_parsing_state(id = i['id'], state='sent') # Обновляем состояние записи в parsing_data #
         elif i['state'] == 'sent':
             print(str(i['id']), 'Уже отправлялась ранее')
 
-
-async def send_message():    
-    await parser.main(cores=1) # Вызываем парсер и передаём количество потоков #
-    # Вызываем функцию фильтрации, передаём данные из paring_data #
-     
-    await parsing_data_filter(requests = conn.parsing_data_read()) 
+    print('[INFO] Всё сообщения отправлены')
 
 async def schedule_handler(message: types.Message):
     while True:
-        await asyncio.create_task(send_message())
-        await asyncio.sleep(2700)
+        await parser.main(cores=CORES) # Вызываем парсер и передаём количество потоков #
+            # Вызываем функцию фильтрации, передаём данные из paring_data #
+        await parsing_data_filter(requests = conn.parsing_data_read()) 
+
+        await asyncio.sleep(3600)
 
 dp.register_message_handler(schedule_handler, commands=["schedule"])
 
@@ -102,6 +102,6 @@ dp.register_message_handler(schedule_handler, commands=["schedule"])
 if __name__ == '__main__':
     print('Бот запущен')
     conn = db_connect()
-    print(conn)
+    print('[INFO]: База Данных: ',conn)
     loop = asyncio.get_event_loop()
     loop.create_task(executor.start_polling(dp, skip_updates=True))
