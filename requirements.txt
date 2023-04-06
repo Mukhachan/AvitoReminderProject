@@ -18,6 +18,7 @@ kivy-deps.glew==0.3.1
 kivy-deps.sdl2==0.4.5
 Kivy-examples==2.1.0
 Kivy-Garden==0.1.5
+kivymd==1.1.1
 magic-filter==1.0.9
 MarkupSafe==2.1.2
 multidict==6.0.4
