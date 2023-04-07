@@ -1,4 +1,4 @@
-from config import host, user, password, db_name, bot_api_token
+from config import host, user, password, db_name, bot_api_token, cores
 from datetime import *
 from aiogram import Bot, Dispatcher, types, executor
 import asyncio
@@ -9,7 +9,7 @@ import pymysql.cursors
 from DataBase import DataBase
 from backend import AvitoRequest
 
-CORES = 1
+
 
 # Подключаемся к бд и получаем экземпляр класса DataBase в лице "conn" #
 parser = AvitoRequest
@@ -86,7 +86,7 @@ async def parsing_data_filter(requests: list) -> bool:
 
 async def schedule_handler(message: types.Message):
     while True:
-        await parser.main(cores=CORES) # Вызываем парсер и передаём количество потоков #
+        await parser.main(cores=cores) # Вызываем парсер и передаём количество потоков #
             # Вызываем функцию фильтрации, передаём данные из paring_data #
         await parsing_data_filter(requests = conn.parsing_data_read()) 
 

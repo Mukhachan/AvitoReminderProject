@@ -214,7 +214,7 @@ class DataBase:
         self.__connection.commit()
         print('Данные о состоянии успешно обновлены')
 
-    async def get_user_state(self) -> str: # Чтение состояния авторизации #
+    async def get_user_state(self) -> bool: # Чтение состояния авторизации #
         """
             Получаем состояние авторизации пользователя
         """
@@ -233,15 +233,17 @@ class DataBase:
         
         except FileNotFoundError:
             print('Нет файла сfg.cfg')
-            return ('Нет файла сfg.cfg', False)
+            return False
 
         sql = (
             f"SELECT `state` FROM `avitoreminder`.`user_state` WHERE (`user_id` = '{user_id}')"
         )
         self.__cur.execute(sql)
-        res = self.__cur.fetchone()     
-
-        return res   
+        res = self.__cur.fetchone()['state'] 
+        if res == "True":
+            return True
+        elif res == "False":
+            return False   
 
     async def create_start_code(self) -> str: # Создание старт кода для бота #
 
