@@ -1,35 +1,18 @@
-from config import host, user, password, db_name, bot_api_token, cores
+from config import bot_api_token, cores
 from datetime import *
 from aiogram import Bot, Dispatcher, types, executor
 import asyncio
 
-import pymysql
-import pymysql.cursors
 
 from DataBase import DataBase
 from backend import AvitoRequest
+from db_connect import db_connect
 
 
 
 # Подключаемся к бд и получаем экземпляр класса DataBase в лице "conn" #
 parser = AvitoRequest
-def db_connect():
-    try:
-        db = pymysql.connect(
-            host = host,
-            port = 3306,
-            user = user,
-            password = password,
-            database = db_name,
-            cursorclass = pymysql.cursors.DictCursor
-        )
-        conn = DataBase(db)
-        
-    except Exception as ex:
-        print("[INFO] Ошибка при работе с MySQL: ", ex)
-    return conn
-
-
+conn = db_connect()
 bot = Bot(token=bot_api_token)
 dp = Dispatcher(bot)
 
@@ -67,11 +50,19 @@ async def start(message: types.Message):
             await message.answer("Вы не зарегестрированны, зайдите по своей персональной ссылке")
 
 
-async def parsing_data_filter(requests: list) -> bool:
+@dp.message_handler() # Просто Эхо для проверки бота # 
+async def echo_message(message: types.Message):
+    print(str(message.chat.id), ':', message.text)
+    await bot.send_message(message.from_user.id, message.text)
+
+
+async def parsing_data_filter(requests: list) -> tuple:
     """ Функция фильтрации передаём туда список с запросами
         requests это список из словарей
     """
-    async for i in requests: # Перебираем все словари(записи) и фильтруем #  
+    if requests == 'Список пуст':
+        return ('Список пуст', False)
+    for i in requests: # Перебираем все словари(записи) и фильтруем #  
         if i['state'] == 'added':
             chat_id = await conn.get_bot_key(i['user_id']) # Получаем id чата в который надо отправить запись #
             text = 'Появились новые товары среди ваших отслеживаемых!\n', i['title'], i['price'], i['link']
@@ -83,16 +74,17 @@ async def parsing_data_filter(requests: list) -> bool:
             print(str(i['id']), 'Уже отправлялась ранее')
 
     print('[INFO] Всё сообщения отправлены')
+    return ('Всё сообщения отправлены', True)
 
-async def schedule_handler(message: types.Message):
+async def schedule_handler():
     while True:
+        print('Запускаю парсер')
         await parser.main(cores=cores) # Вызываем парсер и передаём количество потоков #
             # Вызываем функцию фильтрации, передаём данные из paring_data #
         await parsing_data_filter(requests = conn.parsing_data_read()) 
 
-        await asyncio.sleep(3600)
+        await asyncio.sleep(2700)
 
-dp.register_message_handler(schedule_handler, commands=["schedule"])
 
 
 """
@@ -100,8 +92,11 @@ dp.register_message_handler(schedule_handler, commands=["schedule"])
 А если надо вызвать какой то метод из класса DataBase, пишешь conn.`название функции(аргументы)`
 """
 if __name__ == '__main__':
-    print('Бот запущен')
+    print('Бот запущен\n')
     conn = db_connect()
-    print('[INFO]: База Данных: ',conn)
+    print('[INFO]: База Данных: ', conn)
+    
     loop = asyncio.get_event_loop()
+    
+    loop.create_task(schedule_handler())
     loop.create_task(executor.start_polling(dp, skip_updates=True))

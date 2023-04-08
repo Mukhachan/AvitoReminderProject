@@ -1,25 +1,6 @@
-from DataBase import DataBase
-from config import host, user, password, db_name
-import pymysql
-import pymysql.cursors
+from db_connect import db_connect
 
 # Подключаемся к бд и получаем экземпляр класса DataBase в лице "conn" #
-def db_connect():
-    try:
-        
-        db = pymysql.connect(
-            host = host,
-            port = 3306,
-            user = user,
-            password = password,
-            database = db_name,
-            cursorclass = pymysql.cursors.DictCursor
-        )
-        conn = DataBase(db)
-        print(conn)
-    except Exception as ex:
-        print("[INFO] Ошибка при работе с MySQL: ", ex)
-    return conn
 conn = db_connect()
 
 while True:

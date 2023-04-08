@@ -10,8 +10,11 @@ CREATE TABLE IF NOT EXISTS `avitoreminder`.`requests`(
     id int NOT NULL AUTO_INCREMENT,
     user_id integer NOT NULL,
     title text NOT NULL,
-    price integer NULL,
+    price_from integer NULL,
+    price_up_to integer NULL,
     add_description text NULL,
+    city text NULL,
+    delivery TINYINT NULL,
     exception text NULL,
     PRIMARY KEY (id)
 );
