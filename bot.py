@@ -57,21 +57,29 @@ async def echo_message(message: types.Message):
 
 
 async def parsing_data_filter(requests: list) -> tuple:
-    """ Функция фильтрации передаём туда список с запросами
+    """ Функция фильтрации. Передаём сюда список с запросами
         requests это список из словарей
     """
     if requests == 'Список пуст':
         return ('Список пуст', False)
-    for i in requests: # Перебираем все словари(записи) и фильтруем #  
-        if i['state'] == 'added':
-            chat_id = await conn.get_bot_key(i['user_id']) # Получаем id чата в который надо отправить запись #
-            text = 'Появились новые товары среди ваших отслеживаемых!\n', i['title'], i['price'], i['link']
+    print('Количество собщение должно отправится: ', len(requests))
 
-            await bot.send_message(chat_id=chat_id, text=text) # отправляем сообщение юзеру #
+    for i, elem in enumerate(requests): # Перебираем все словари(записи) и фильтруем #  
+        print('Пробую отправить: ', i)
+        if elem['state'] == 'added':
+            print('ID пользователя:', elem['user_id'])
+            chat_id = conn.get_bot_key(elem['user_id']) # Получаем id чата в который надо отправить запись #
             
-            await conn.update_parsing_state(id = i['id'], state='sent') # Обновляем состояние записи в parsing_data #
-        elif i['state'] == 'sent':
-            print(str(i['id']), 'Уже отправлялась ранее')
+            if chat_id == None:
+                print('Такого пользователя нет или ещё что-то.\nЕдем дальше')
+                continue
+
+            text = f'Появились новые товары среди ваших отслеживаемых! \n{elem["title"]}\n{elem["price"]} руб\n\n{elem["link"]}'
+            await bot.send_message(chat_id=chat_id, text=text, parse_mode="html") # отправляем сообщение юзеру #
+            conn.update_parsing_state(id = elem['id'], state='sent') # Обновляем состояние записи в parsing_data #
+
+        elif elem['state'] == 'sent':
+            print(str(elem['id']), 'Уже отправлялась ранее')
 
     print('[INFO] Всё сообщения отправлены')
     return ('Всё сообщения отправлены', True)
@@ -97,6 +105,6 @@ if __name__ == '__main__':
     print('[INFO]: База Данных: ', conn)
     
     loop = asyncio.get_event_loop()
-    
+
     loop.create_task(schedule_handler())
     loop.create_task(executor.start_polling(dp, skip_updates=True))
