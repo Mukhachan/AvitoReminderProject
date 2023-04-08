@@ -1,6 +1,6 @@
-from kivymd.app import MDApp 
-from kivymd.uix.label import MDLabel 
 from kivy.core.window import Window
+from kivy. app import App 
+from kivy.lang import Builder
 
 #from config import host, user, password, db_name, bot_api_token
 from db_connect import db_connect
@@ -9,18 +9,21 @@ import asyncio
 import pymysql
 
 
-
-class MainApp (MDApp):
-    conn = db_connect()
-    
-    def build (self): #функция вывода интерфейса
-
-        self.icon = "Static/Лого.png"
+class MainApp(App):
+    def build(self):
         self.title = "Парсер Авито"
-        return MDLabel (text="Текст", halign="center")
+        self.icon = "Static\Лого.png"
+        return Builder.load_file("main.kv")
+    
+    def press_button(self, instance):
+        print("кнопка нажата")
+        print(instance)
+
+MainApp().run()
+
+
 
 if __name__=='__main__':
-    
     loop = asyncio.get_event_loop()
     app = MainApp (title="Парсер Авито") 
     loop = asyncio.create_task(app.run())
