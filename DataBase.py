@@ -103,7 +103,7 @@ class DataBase:
             print("Неверный пароль")
             return("Неверный пароль", False)
 
-    def parsing_data_add(self, user_id: int, link: str, title: str, price: int, state: str) -> list: # Добавление в parsing data #
+    def parsing_data_add(self, user_id: int, link: str, title: str, price: int, state: str) -> None: # Добавление в parsing data #
         """ 
         Функция используется для добавления данных в таблицу parsing_data, после парсинга Авито
         """
@@ -131,14 +131,15 @@ class DataBase:
         except:
             print('Ошибка при чтении БД (parsing_data)')
           
-    def set_request(self, user_id: int, title: str, price: int | None, 
-                    add_description: str | None, exception: str | None ) -> tuple: # Добавление запроса для Авито #
+    def set_request(self, user_id: int, title: str, price_from: int | None, 
+                    price_up_to: int | None, add_description: str | None, 
+                    city: str, delivery: int, exception: str | None ) -> tuple: # Добавление запроса для Авито #
         """
             Добавляем в таблицу requests данные для парсинга
         """
         try:
             self.__cur.execute(
-                f'INSERT INTO `avitoreminder`.`requests` VALUES (NULL, {user_id}, "{title}", {price}, "{add_description}", "{exception}")'
+                f'INSERT INTO `avitoreminder`.`requests` VALUES (NULL, {user_id}, "{title}", {price_from}, {price_up_to}, "{add_description}", "{city}", {delivery},"{exception}")'
             )
             self.__connection.commit()
             print("[INFO] Запрос успешно создан")
@@ -273,7 +274,13 @@ class DataBase:
             f'SELECT bot_key FROM `avitoreminder`.`users` WHERE id = {id};'
         )
         self.__cur.execute(sql)
-        res = self.__cur.fetchone()['bot_key']
+        
+        res = self.__cur.fetchone()
+        if res:
+            res = res['bot_key']
+        else:
+            return None
+        print('Чат пользователя: ', res, '\n')
         return res
 
     def get_userid_by_bot_key(self, bot_key: str) -> int: # получаем user_id с помощью bot_key #
