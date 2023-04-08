@@ -15,7 +15,7 @@ class MainApp (MDApp):
     
     def build (self): #функция вывода интерфейса
 
-        self.icon = "Static/Лого1.png"
+        self.icon = "Static/Лого.png"
         self.title = "Парсер Авито"
         return MDLabel (text="Текст", halign="center")
 
