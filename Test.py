@@ -1,5 +1,5 @@
 from cryptography.fernet import Fernet
-
+import base64
 """__key = b'mAJ_0ZIV4Y8FFVx5b-bfBpTNWsqv1hsxt-H5gHvXEYM='
 __f = Fernet(__key)
 id = input()
@@ -17,9 +17,31 @@ with open('cfg.cfg', 'rb') as file:
 
 f = int(f)
 print(f)"""
-
+"""
 requests = [{'id': 1, 'user_id': 8, 'link': 'https://www.avito.ru/moskva/telefony/iphone_13_128gb_zelenyy_2766983402', 'title': 'iPhone 13 128Gb Зеленый', 'price': 54990, 'state': 'added'}, {'id': 2, 'user_id': 1, 'link': 'https://www.avito.ru/moskva/telefony/iphone_11_2883219378', 'title': 'iPhone 11', 'price': 19500, 'state': 'sent'}, {'id': 3, 'user_id': 1, 'link': 'https://www.avito.ru/moskva/kollektsionirovanie/byust_putina_2593174114', 'title': 'Бюст путина', 'price': 650, 'state': 'added'}]
 
 for i, elem in enumerate(requests):
     print(i)
-    print(elem)
+    print(elem)"""
+"""
+p_from = input().encode('utf-8')
+p_to = input().encode('utf-8')
+
+x = b'\x01(\x02\x02\x01\x02\x01E\xc6\x9a\x0c\x1b{"from":' + p_from + b',"to":' + p_to +  b'}'
+z = x
+x = base64.b64encode(x)
+print(x)
+
+x = base64.b64decode(x)
+
+print(x)
+print(z == x)"""
+
+import grequests
+
+urls = (grequests.get('https://www.youtube.com') for i in range(30))
+
+answers = grequests.map(urls)
+
+for i, r in enumerate(answers):
+    print(i, '-', r)

@@ -30,11 +30,11 @@ async def start(message: types.Message):
         start_code = start_code[1]
         print('Старткод', start_code, type(start_code))
         try:
+
             if start_code == "12dev34":
                 await message.answer("разрабы идут нахуй")
             elif start_code == "444555666":
                 await message.answer(text= f'Вы успешно вошли в бд под логином "Paul" \nЧат ID: {chat_id}') #после правок имя сменится на переменную
-                
             else:
                 # Проверка наличия юзер кода в бд
                 await message.answer(f'Ваш чат ID: {chat_id}')
@@ -62,7 +62,7 @@ async def parsing_data_filter(requests: list) -> tuple:
     """
     if requests == 'Список пуст':
         return ('Список пуст', False)
-    print('Количество собщение должно отправится: ', len(requests))
+    print('Количество сообщений должно отправится: ', len(requests))
 
     for i, elem in enumerate(requests): # Перебираем все словари(записи) и фильтруем #  
         print('Пробую отправить: ', i)
@@ -84,6 +84,7 @@ async def parsing_data_filter(requests: list) -> tuple:
     print('[INFO] Всё сообщения отправлены')
     return ('Всё сообщения отправлены', True)
 
+
 async def schedule_handler():
     while True:
         print('Запускаю парсер')
@@ -92,7 +93,6 @@ async def schedule_handler():
         await parsing_data_filter(requests = conn.parsing_data_read()) 
 
         await asyncio.sleep(2700)
-
 
 
 """

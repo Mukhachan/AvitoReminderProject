@@ -125,7 +125,7 @@ class DataBase:
         try:
             self.__cur.execute(f"SELECT * FROM `avitoreminder`.`parsing_data`")
             res = self.__cur.fetchall()
-            print(res)
+            
             return res if res else 'Список пуст'
         
         except:
