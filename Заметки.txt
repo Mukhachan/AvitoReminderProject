@@ -6,5 +6,10 @@ b'mAJ_0ZIV4Y8FFVx5b-bfBpTNWsqv1hsxt-H5gHvXEYM='
 
 dg43gshe
 
-ASgCAgECAUXGmgwaeyJmcm9tIjogMjAwMDAsInRvIjogNjAwMDB9AQ
-ASgCAgECAUXGmgwZeyJmcm9tIjoyMDAwMCwidG8iOjYwMDAwfQ
+
+
+ASgCAgECAUXGmgwWeyJmcm9tIjo0OTAsInRvIjoxMzAwfQ - 490/1300
+ASgCAgECAUXGmgwYeyJmcm9tIjoxMzAwLCJ0byI6NjAwMDB9 - 1300/60000
+ASgCAgECAUXGmgwYeyJmcm9tIjoxMzAwLCJ0byI6NjAwMDB9 - 1300/60000 (Через несколько минут ничего не поменялось)
+ASgCAgECAUXGmgwbeyJmcm9tIjoxMzAwMCwidG8iOjYwMDAwMDB9 - 13000/6000000
+

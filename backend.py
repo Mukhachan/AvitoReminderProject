@@ -1,7 +1,12 @@
-import grequests
 import requests
+from bs4 import BeautifulSoup
 
-from selenium import webdriver
+import collections.abc
+collections.Iterable = collections.abc.Iterable
+collections.Mapping = collections.abc.Mapping
+collections.MutableSet = collections.abc.MutableSet
+collections.MutableMapping = collections.abc.MutableMapping
+from hyper.contrib import HTTP20Adapter
 
 from transliterate import translit
 
@@ -13,43 +18,48 @@ class AvitoRequest:
     def __init__(self):
         self.__conn = db_connect()
         print('Парсер подключился к бд:', self.__conn)
+        self.__session = requests.Session()
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36",
+            "Accept-Language": "ru"
+        }
+        self.url = "https://www.avito.ru/"
 
     def main(self, cores: int) -> bool:
         print('Парсер запустился')
 
         requests = self.__conn.get_requests()
-        AvitoRequest.create_links(requests=requests)
+        links = AvitoRequest.create_links(self, requests=requests)
+        for i in links:
+            AvitoRequest.parser(self, i)
+            break
+            
 
 
     def parser(self, request: dict) -> tuple:
-        pass
+        self.__session.mount('https://', HTTP20Adapter())
+        r = self.__session.get(request, data=self.headers)
+        print('status_code:', r.status_code)
 
-    def create_links(requests):
-        links = []
-        browser = webdriver.Firefox()
+        raw_page = r.text
+
+        soup = BeautifulSoup(raw_page, 'lxml')
         
-
-        for i in requests:
+        container = soup.select('div.items-items-kAJAg')
+        for item in container:
+            title = soup.select('.title-root-zZCwT iva-item-title-py3i_ title-listRedesign-_rejR title-root_maxHeight-X6PsH text-text-LurtD text-size-s-BxGpL text-bold-SinUO')
+            print(title)
             
-            city = translit(i["city"].lower(), 'ru', reversed=True)
-            title = i['title']
-            delivery = i['delivery']
-            p_from = i['price_from']
-            p_to = i['price_up_to']
 
+    def create_links(self, requests: list) -> list:
+        links = []
+        
+        for i, el in enumerate(requests):
+            city = translit(el["city"].lower(), 'ru', reversed=True)
+            title = el['title']
 
-            first_link = "https://www.avito.ru/" + city + "?q=" + title
-            datas = {
-                'q' : title,
-                'd' : delivery,
-                'p_from' : p_from,
-                'p_to': p_to,
-            }
-            s = requests.Session()
-
-            loging = s.post("https://www.avito.ru/", data = datas)
-            print(loging.text)
-
-            #link = f'https://www.avito.ru/{city}?d={delivery}&f={price}&q={title}' 
-            #links.append(link)
-            #print(link)    
+            url = f'{self.url}{city}?q={title}' 
+            print(i, url)
+            links.append(url)
+            
+        return links
