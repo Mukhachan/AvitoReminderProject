@@ -113,7 +113,7 @@ class DataBase:
             f'INSERT INTO `avitoreminder`.`parsing_data` VALUES (NULL, "{user_id}", "{link}", "{title}", "{price}", "{state}")'
                )
             self.__connection.commit()
-            print("[INFO] Данные успешно добавлены")
+            print("[INFO]. Данные успешно добавлены")
         except:
             print('[INFO] Возникла ошибка при добавлении данных в таблицу parsing_data')
  

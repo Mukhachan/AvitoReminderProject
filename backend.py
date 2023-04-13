@@ -1,7 +1,11 @@
 import requests
-from bs4 import BeautifulSoup
+
+from selectolax.parser import HTMLParser
+from urllib.parse import unquote
+import json
 
 import collections.abc
+
 collections.Iterable = collections.abc.Iterable
 collections.Mapping = collections.abc.Mapping
 collections.MutableSet = collections.abc.MutableSet
@@ -10,7 +14,7 @@ from hyper.contrib import HTTP20Adapter
 
 from transliterate import translit
 
-#from DataBase import DataBase
+from DataBase import DataBase
 from db_connect import db_connect
 
 
@@ -25,41 +29,84 @@ class AvitoRequest:
         }
         self.url = "https://www.avito.ru/"
 
-    def main(self, cores: int) -> bool:
+    def main(self, cores = 1) -> bool:
+        """
+            Это мэйн функция которая вызывается ботом. Она запускает функцию генерации ссылок
+            и соответственно сам парсер
+            Она принимает параметр cores который определяет количество потоков для работы парсера.
+                Пока что парсер однопоточный
+        """
         print('Парсер запустился')
 
         requests = self.__conn.get_requests()
         links = AvitoRequest.create_links(self, requests=requests)
         for i in links:
-            AvitoRequest.parser(self, i)
-            break
+            user_id = i[0] 
+            request = i[1]
+            print(user_id, request, sep='\n')
+            
+            AvitoRequest.parser(self, request=request, user_id=user_id)
+             # Пока что обрабатываем только первую ссылку #
             
 
+    def parser(self, request: str, user_id: int) -> tuple:
+        self.__session.mount('https://', HTTP20Adapter()) # Позволяет обойти защиту Авито #
+        r = self.__session.get(request, data=self.headers) # Получаем страницу #
+        print('status_code:', r.status_code) # Выводим статус код. Если 200, то всё отлично #
 
-    def parser(self, request: dict) -> tuple:
-        self.__session.mount('https://', HTTP20Adapter())
-        r = self.__session.get(request, data=self.headers)
-        print('status_code:', r.status_code)
+        raw_page = r.text # Забираем весь текст из страницы #
 
-        raw_page = r.text
-
-        soup = BeautifulSoup(raw_page, 'lxml')
+        tree = HTMLParser(raw_page)
+        scripts = tree.css('script') # Сохраняем скрипты #
+        for script in scripts: # Ищем нужный скрипт в котором храняться товары #
+            if "window.__initialData__" in script.text(): 
+                raw = script.text().split(';')[0].split('=')[-1].strip() # Чистим JSON от лишнего #
+                raw = unquote(raw)
+                raw = raw[1:-1]
+                data = json.loads(raw) # Преобразуем страницу в формат JSON # 
+                
+                """
+                with open('data.json', 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False)
+                    print('Файл JSON сохранён')
+                """
+                break # Выходим из цикла так как нашли нужный скрипт #
         
-        container = soup.select('div.items-items-kAJAg')
-        for item in container:
-            title = soup.select('.title-root-zZCwT iva-item-title-py3i_ title-listRedesign-_rejR title-root_maxHeight-X6PsH text-text-LurtD text-size-s-BxGpL text-bold-SinUO')
-            print(title)
-            
+        parsing_data = self.__conn.parsing_data_read()  # считываем всю информацию из таблицы что бы фильтровать товары #
+        parsing_data = str(parsing_data)
+        print(type(parsing_data))
+        
+        for key in data:  # Перебираем JSON файл и ищем single-page. В ней храняться данные о товарах #
+
+            if 'single-page' in key:
+                for item in data[key]["data"]["catalog"]["items"]: # берём информацию о конкретном товаре по порядку #
+                    examination = f"'user_id': {user_id}, 'link': 'https://www.avito.ru{item['urlPath']}'"
+                    
+                    if examination in parsing_data: # Проверяем. Есть ли уже этот товар в БД #
+                        print(f'[INFO]. Данный товар уже сохранён в БД {item["id"]}')
+                        continue
+                    else:
+                        full_url = self.url[:-1] + item["urlPath"]
+                        price = item["priceDetailed"]['value']
+                        self.__conn.parsing_data_add(
+                            user_id=user_id, link=full_url, title=item["title"], price=price, state='added'
+                            )
+                        
+                
 
     def create_links(self, requests: list) -> list:
+        """
+            Эта функция генерирует список ссылок(без пагинации) которые надо распарсить возвращает его
+        """
         links = []
         
         for i, el in enumerate(requests):
             city = translit(el["city"].lower(), 'ru', reversed=True)
             title = el['title']
-
+            user_id = el["user_id"]
             url = f'{self.url}{city}?q={title}' 
             print(i, url)
-            links.append(url)
-            
+            links.append((user_id, url))
+        
+        print(links)
         return links

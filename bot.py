@@ -88,7 +88,7 @@ async def parsing_data_filter(requests: list) -> tuple:
 async def schedule_handler():
     while True:
         print('Запускаю парсер')
-        await parser.main(cores=cores) # Вызываем парсер и передаём количество потоков #
+        #await parser.main(cores=cores) # Вызываем парсер и передаём количество потоков #
             # Вызываем функцию фильтрации, передаём данные из paring_data #
         await parsing_data_filter(requests = conn.parsing_data_read()) 
 
