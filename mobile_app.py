@@ -1,13 +1,15 @@
 from kivy.core.window import Window
-from kivy. app import App 
+from kivy. app import App
 from kivy.lang import Builder
-
+from kivy.metrics import dp
 #from config import host, user, password, db_name, bot_api_token
 from db_connect import db_connect
 from DataBase import DataBase
 import asyncio
 import pymysql
 
+Window.size = (405, 720)
+Window.clearcolor = (255/255, 255/255, 255/255)
 
 class MainApp(App):
     def build(self):
@@ -16,14 +18,10 @@ class MainApp(App):
         return Builder.load_file("main.kv")
     
     def press_button(self, instance):
-        print("кнопка нажата")
+        print('кнопка "Войти" нажата')
         print(instance)
-
-MainApp().run()
-
-
 
 if __name__=='__main__':
     loop = asyncio.get_event_loop()
-    app = MainApp (title="Парсер Авито") 
+    app = MainApp(title="Парсер Авито") 
     loop = asyncio.create_task(app.run())
