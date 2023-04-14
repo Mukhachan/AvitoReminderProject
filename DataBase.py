@@ -103,19 +103,22 @@ class DataBase:
             print("Неверный пароль")
             return("Неверный пароль", False)
 
-    def parsing_data_add(self, user_id: int, link: str, title: str, price: int, state: str) -> None: # Добавление в parsing data #
+    def parsing_data_add(self, user_id: int, request_id: int, link: str, title: str, price: int, state: str) -> None: # Добавление в parsing data #
         """ 
         Функция используется для добавления данных в таблицу parsing_data, после парсинга Авито
         """
 
         try:
-            self.__cur.execute(
-            f'INSERT INTO `avitoreminder`.`parsing_data` VALUES (NULL, "{user_id}", "{link}", "{title}", "{price}", "{state}")'
-               )
+            title = title.replace('"', '')
+            title = title.replace('”', '')
+            sql = f'INSERT INTO `avitoreminder`.`parsing_data` VALUES (NULL, {user_id}, {request_id}, "{link}", "{title}", "{price}", "{state}")'
+            
+            self.__cur.execute(sql)
             self.__connection.commit()
             print("[INFO]. Данные успешно добавлены")
-        except:
-            print('[INFO] Возникла ошибка при добавлении данных в таблицу parsing_data')
+        except Exception as e:
+            print('[INFO] Возникла ошибка при добавлении данных в таблицу parsing_data: ', e)
+            print(sql)
  
     def parsing_data_read(self) -> list: # Чтение из parsing_data #
         """
@@ -322,3 +325,17 @@ class DataBase:
         self.__cur.execute(sql)
         self.__connection.commit()
         return ('Всё поменяли', True)
+    
+    def get_request(self, id: int) -> dict:
+        """
+            Получает один реквест для работы фильтра
+        """
+        try:
+            sql = (
+                f'SELECT * FROM `avitoreminder`.`requests` WHERE id = {id}'
+            )
+            self.__cur.execute(sql)
+            res = self.__cur.fetchone()
+            return res if res else 'Список пуст'
+        except Exception as e:
+            print('[INFO]. Возникла ошибка в функции get_request:', e)

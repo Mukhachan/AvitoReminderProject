@@ -1,5 +1,4 @@
-from cryptography.fernet import Fernet
-import base64
+
 """__key = b'mAJ_0ZIV4Y8FFVx5b-bfBpTNWsqv1hsxt-H5gHvXEYM='
 __f = Fernet(__key)
 id = input()
@@ -37,10 +36,26 @@ x = base64.b64decode(x)
 
 print(x)
 print(z == x)"""
-
+"""
 data = {'id': 1, 'user_id': 8, 'link': 'https://www.avito.ru/moskva/telefony/iphone_13_128gb_zelenyy_2766983402', 'title': 'iPhone 13 128Gb Зеленый', 'price': 54990, 'state': 'added'}
 
 if 'moskva/telefony/iphone_13_128gb_zelenyy_2766983402' in data['link']:
     print('нашлось')
 else:
     print('-')
+"""
+from _thread import start_new_thread
+import numpy as np
+
+#lst = np.random.randint(-10, 30, 50)
+lst = [i for i in range(1, 21)]
+print(lst)
+
+
+
+def function(lst):
+    for i in lst:
+        print(i)
+
+start_new_thread(function, (lst[:len(lst)//2], ))
+start_new_thread(function, (lst[len(lst)//2:], ))

@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS `avitoreminder`.`requests`(
 CREATE TABLE IF NOT EXISTS `avitoreminder`.`parsing_data`(
     id int NOT NULL AUTO_INCREMENT,
     user_id integer NOT NULL,
+    request_id integer NOT NULL,
     link text NOT NULL,
     title text NOT NULL,
     price integer NOT NULL,
