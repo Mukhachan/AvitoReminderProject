@@ -5,4 +5,8 @@ db_name = 'avitoreminder'
 bot_api_token = '6039503049:AAFheifhdgdt20Reb9vCMGR1O60y3cAIgys'
 crypt_key = b'mAJ_0ZIV4Y8FFVx5b-bfBpTNWsqv1hsxt-H5gHvXEYM=' # Ключ для шифровки файла cfg
 cores = 1
-proxies = ["https://6qFwMg:uwHhBX@194.67.219.197:9609"]
+proxies = [
+            "https://6qFwMg:uwHhBX@194.67.219.197:9609", 
+            "https://6qFwMg:uwHhBX@193.124.180.6:9077", 
+            "https://6qFwMg:uwHhBX@193.124.177.100:9751"
+        ]

@@ -29,8 +29,9 @@ class AvitoRequest:
             "Accept-Language": "ru"
         }
         self.proxies = {
-            'https' : randint(0, len(proxies) - 1)
+            'https' : proxies[randint(0, len(proxies) - 1)]
         }
+        print("Сейчас используем ip: ", self.proxies['https'])
 
  
         
