@@ -94,11 +94,17 @@ class DataBase:
         id = str(res['id'])
 
         hash_psw = res['password']
-        print(hash_psw)
+
         if check_password_hash(hash_psw, password):
             DataBase.set_user_state(self, id)
             print('Успешная авторизация')
-            return ("Успешная авторизация", True)
+            bot_key = DataBase.get_bot_key(self, id=id)
+            if bot_key[0] == 'chat_id':
+                print('(get_user) тг привязан')
+                return ("Успешная авторизация", True, id, True)
+            elif bot_key[0] == 'start_code':
+                print('(get_user) тг НЕ привязан')
+                return ("Успешная авторизация", True, id, bot_key)
         else:
             print("Неверный пароль")
             return("Неверный пароль", False)
@@ -175,18 +181,16 @@ class DataBase:
         with open('cfg.cfg', 'wb') as file:
             file.write(self.__f.encrypt(id.encode()))
         
-        
         try:
             with open('cfg.cfg', 'r') as f:
                 file = f.read()
-                print(file)
                 if file == b'' or file == '':
                     return ('Файл cfg.cfg пуст', False)
             
             user_id = self.__f.decrypt(file)
             print(f'[INFO] Дешифровка user_id: {user_id}')
             user_id = int(user_id)
-            print(user_id)
+
 
         except FileNotFoundError:
             print('Нет файла сfg.cfg')
@@ -268,10 +272,10 @@ class DataBase:
         if res:
             DataBase.create_start_code()
 
-        return code
+        return (code, f'http://t.me/Avito_Parser_1kbot?start={code}')
     
     def get_bot_key(self, id: int) -> str: # Получаем бот кей из бд # 
-        """ Передаём bot_key из бд c помощью ID 
+        """ Получаем bot_key из бд c помощью ID 
         """
         sql = (
             f'SELECT bot_key FROM `avitoreminder`.`users` WHERE id = {id};'
@@ -281,10 +285,17 @@ class DataBase:
         res = self.__cur.fetchone()
         if res:
             res = res['bot_key']
+            if str(res).isdigit(): # Если это число то тг уже привязан # 
+                print('chat_id :', res)
+                return ('chat_id', res)
+            
+            elif str(res).isdigit() == False: # Если тг не привязан #
+                print('start_code:', res)
+                return ('start_code', res)
+
         else:
             return None
-        print('Чат пользователя: ', res, '\n')
-        return res
+
 
     def get_userid_by_bot_key(self, bot_key: str) -> int: # получаем user_id с помощью bot_key #
         """ Берём ID пользователя из записи с нужным на bot_key """
@@ -297,7 +308,8 @@ class DataBase:
         if fetch == None:
             print('fetch -', fetch)
             return ('Такой Bot_key не найден в бд', False)
-        return fetch["id"]
+        
+        return (fetch["id"], True)
 
     def set_bot_key(self, bot_key: str, tg_id: str) -> tuple: # сохраняем id чата #
         """

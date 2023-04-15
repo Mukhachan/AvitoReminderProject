@@ -1,8 +1,17 @@
+import json
 import requests
+import threading
+
 from selectolax.parser import HTMLParser
 from urllib.parse import unquote
-import json
 from random import randint
+
+from transliterate import translit
+
+from DataBase import DataBase
+from db_connect import db_connect
+from config import proxies
+
 import collections.abc
 
 collections.Iterable = collections.abc.Iterable
@@ -11,11 +20,6 @@ collections.MutableSet = collections.abc.MutableSet
 collections.MutableMapping = collections.abc.MutableMapping
 from hyper.contrib import HTTP20Adapter
 
-from transliterate import translit
-
-from DataBase import DataBase
-from db_connect import db_connect
-from config import proxies
 
 class AvitoRequest:
     def __init__(self):
@@ -29,13 +33,13 @@ class AvitoRequest:
             "Accept-Language": "ru"
         }
         self.proxies = {
-            'https' : proxies[randint(0, len(proxies) - 1)]
+            'https' : proxies[randint(0, len(proxies) - 1)],
+            'http' : proxies[randint(0, len(proxies) - 1)]
         }
         print("Сейчас используем ip: ", self.proxies['https'])
 
  
         
-
     def main(self, cores = 1) -> bool:
         """
             Это мэйн функция которая вызывается ботом. Она запускает функцию генерации ссылок
@@ -47,15 +51,16 @@ class AvitoRequest:
 
         requests = self.__conn.get_requests()
         links = AvitoRequest.create_links(self, requests=requests)
+
         for i in links:
             user_id = i[0] 
             url = i[1]
             request_id = i[2]
             print(user_id, url, sep='\n')
-            
+            #thr = threading.Thread(target=AvitoRequest.parser, args=(self, request_id, url, user_id))
+            #thr.start()
             AvitoRequest.parser(self, request_id=request_id, url=url, user_id=user_id)
-             # Пока что обрабатываем только первую ссылку #
-            
+
 
     def parser(self, request_id: int, url: str, user_id: int) -> tuple:
         self.__session.mount('https://', HTTP20Adapter()) # Позволяет обойти защиту Авито #
@@ -66,7 +71,7 @@ class AvitoRequest:
         
         tree = HTMLParser(raw_page)
         scripts = tree.css('script') # Сохраняем скрипты #
-        for script in scripts[::-1]: # Ищем нужный скрипт в котором храняться товары. С конца #
+        for script in scripts[::-1]: # Ищем нужный скрипт в котором храняться товары. С конца что бы время сэкономить#
             if "window.__initialData__" in script.text(): 
                 raw = script.text().split(';')[0].split('=')[-1].strip() # Чистим JSON от лишнего #
                 raw = unquote(raw)
@@ -85,11 +90,11 @@ class AvitoRequest:
         print(type(parsing_data))
         
         for key in data:  # Перебираем JSON файл и ищем single-page. В ней храняться данные о товарах #
-
             if 'single-page' in key:
                 for item in data[key]["data"]["catalog"]["items"]: # берём информацию о конкретном товаре по порядку #
                     examination = (
-                        f"'user_id': {user_id}, 'request_id': {request_id}, 'link': 'https://www.avito.ru{item['urlPath']}'")
+                        f"'user_id': {user_id}, 'request_id': {request_id}, 'link': 'https://www.avito.ru{item['urlPath']}'"
+                                )
                     
                     if examination in parsing_data: # Проверяем. Есть ли уже этот товар в БД #
                         print(f'[INFO]. Данный товар уже сохранён в БД {item["id"]}')

@@ -1,4 +1,4 @@
-from config import bot_api_token, cores
+from config import bot_api_token, cores, parser_timer
 from datetime import *
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.utils import *
@@ -11,43 +11,62 @@ from db_connect import db_connect
 
 
 # Подключаемся к бд и получаем экземпляр класса DataBase в лице "conn" #
-parser = AvitoRequest()
-conn = db_connect()
 bot = Bot(token=bot_api_token)
 dp = Dispatcher(bot)
 
 
 @dp.message_handler(commands=['start'])
 async def start(message: types.Message):
-    start_code = message.text.split()
-    chat_id = str(message.chat.id)
-    
-    print('Чат ID', chat_id, type(chat_id))
-    if len(start_code) == 1:
-        print('Обычный запуск')
+    try:
+        start_code = message.text.split()
+        chat_id = str(message.chat.id)
+        
+        print('Чат ID', chat_id, type(chat_id))
+    except:
+        return    
+
+    if len(start_code) == 1: # Проверяем наличие старткода #
+        print('Нет старткода. Обычный запуск...')
         await message.answer('Нет старткода')
-    else:
-        start_code = start_code[1]
-        print('Старткод', start_code, type(start_code))
-        try:
+        return
 
-            if start_code == "12dev34":
-                await message.answer("разрабы идут нахуй")
-            elif start_code == "444555666":
-                await message.answer(text= f'Вы успешно вошли в бд под логином "Paul" \nЧат ID: {chat_id}') #после правок имя сменится на переменную
-            else:
-                # Проверка наличия юзер кода в бд
-                await message.answer(f'Ваш чат ID: {chat_id}')
-                x = conn.get_userid_by_bot_key(bot_key=start_code)
-                x = conn.set_bot_key(tg_id=chat_id)
+    start_code = start_code[1]
+    print('Старткод', start_code, type(start_code))
+    try:
+        if start_code == "12dev34":
+            await message.answer("разрабная ссылка")
+        elif start_code == "444555666":
+            await message.answer(text= f'Вы успешно вошли в бд под логином "Paul" \nЧат ID: {chat_id}') #после правок имя сменится на переменную
+        else:
+            # Проверка наличия чат ID в бд
+            await message.answer(f'Ваш чат ID: {chat_id}')
 
-                if x[1] == True:
+            check = conn.get_userid_by_bot_key(bot_key=chat_id)
+            if check[1] == True: # Чат уже привязан к другому акку #
+                print('Данный чат уже привязан к другому аккаунту')
+                await message.answer('Данный чат уже привязан к другому аккаунту')
+
+            elif check[1] == False: # Чат ещё не привязан к аккаунту #
+                check = conn.get_userid_by_bot_key(bot_key=start_code) # Проверяем есть ли в БД старткод #
+                if check[1] == True: # Если есть то привязываем аккаунт #
+                    conn.set_bot_key(bot_key=start_code, tg_id=chat_id)
                     await message.answer(f'Бот успешно привязан!')
-                elif x[1] == False:
-                    await message.answer(f'{x[0]}')
-        except Exception as e:
-            print(e)
-            await message.answer("Вы не зарегестрированны, зайдите по своей персональной ссылке")
+
+            
+            """            if x[1] == True:
+                if conn.get_userid_by_bot_key(str(chat_id))[1] == False:
+                    print('Данный чат уже привязан к другому аккаунту')
+                    await message.answer('Данный чат уже привязан к другому аккаунту')
+                
+                else:
+                    x = conn.set_bot_key(bot_key=start_code, tg_id=chat_id)
+                    await message.answer(f'Бот успешно привязан!')
+
+            elif x[1] == False:
+                await message.answer(f'{x[0]}')"""
+    except Exception as e:
+        print(e)
+        await message.answer("Вы не зарегистрированны, зайдите по своей персональной ссылке")
 
 
 @dp.message_handler() # Просто Эхо для проверки бота # 
@@ -101,11 +120,13 @@ async def parsing_data_filter(requests: list) -> tuple:
 async def schedule_handler():
     while True:
         print('Запускаю парсер')
+
+        parser = AvitoRequest()
         parser.main(cores=cores) # Вызываем парсер и передаём количество потоков #
             # Вызываем функцию фильтрации, передаём данные из paring_data #
         await parsing_data_filter(requests = conn.parsing_data_read()) 
 
-        await asyncio.sleep(2700)
+        await asyncio.sleep(parser_timer)
 
 
 """
@@ -114,10 +135,10 @@ async def schedule_handler():
 """
 if __name__ == '__main__':
     print('Бот запущен\n')
+    
     conn = db_connect()
     print('[INFO]: База Данных: ', conn)
     
     loop = asyncio.get_event_loop()
-
-    loop.create_task(schedule_handler())
+    #loop.create_task(schedule_handler())
     loop.create_task(executor.start_polling(dp, skip_updates=True))
