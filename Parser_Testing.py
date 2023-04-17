@@ -1,10 +1,9 @@
 from backend import AvitoRequest
 from os import system
-import threading
 
 from config import cores, db_connect
 
-#system('cls')
+system('cls')
 
 tsk = input('Что запустить?: ')
 parser = AvitoRequest()
