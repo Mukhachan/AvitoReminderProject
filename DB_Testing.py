@@ -1,5 +1,4 @@
-from db_connect import db_connect
-
+from config import db_connect
 # Подключаемся к бд и получаем экземпляр класса DataBase в лице "conn" #
 conn = db_connect()
 

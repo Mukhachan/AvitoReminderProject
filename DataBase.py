@@ -122,6 +122,9 @@ class DataBase:
             self.__cur.execute(sql)
             self.__connection.commit()
             print("[INFO]. Данные успешно добавлены")
+        except pymysql.err.InterfaceError:
+            pass  
+        
         except Exception as e:
             print('[INFO] Возникла ошибка при добавлении данных в таблицу parsing_data: ', e)
             print(sql)

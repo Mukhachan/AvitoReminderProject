@@ -1,6 +1,7 @@
 import json
 import requests
 import threading
+import math
 
 from selectolax.parser import HTMLParser
 from urllib.parse import unquote
@@ -8,9 +9,7 @@ from random import randint
 
 from transliterate import translit
 
-from DataBase import DataBase
-from db_connect import db_connect
-from config import proxies
+from config import proxies, cookie, db_connect
 
 import collections.abc
 
@@ -30,7 +29,8 @@ class AvitoRequest:
 
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36",
-            "Accept-Language": "ru"
+            "Accept-Language": "ru",
+            "cookie": cookie,
         }
         self.proxies = {
             'https' : proxies[randint(0, len(proxies) - 1)],
@@ -38,9 +38,18 @@ class AvitoRequest:
         }
         print("Сейчас используем ip: ", self.proxies['https'])
 
+    def split_list(raw_links: list, cores: int):
+        n = math.ceil(len(raw_links) / cores)
+
+        for x in range(0, len(raw_links), n):
+            e_c = raw_links[x : n + x]
+
+            if len(e_c) < n:
+                e_c = e_c + [None for y in range(n - len(e_c))]
+            yield e_c
  
         
-    def main(self, cores = 1) -> bool:
+    def main(self, cores: int) -> bool:
         """
             Это мэйн функция которая вызывается ботом. Она запускает функцию генерации ссылок
             и соответственно сам парсер
@@ -48,25 +57,40 @@ class AvitoRequest:
                 Пока что парсер однопоточный
         """
         print('Парсер запустился')
-
+        
         requests = self.__conn.get_requests()
-        links = AvitoRequest.create_links(self, requests=requests)
+        raw_links = AvitoRequest.create_links(self, requests=requests) # Получаем голый список ссылок #
+        links = list(AvitoRequest.split_list(raw_links, cores)) # Разбиваем список на cores частей
+        
+        # Создаём cores потоков #
+        for i in range(cores): 
+            print(i)
+            # создаём поток и вызываем start_parser, передаём туда i-тый список  #
+            threading.Thread(target=AvitoRequest.start_parser, args=(self, links[i]), daemon=True).start()
+            # Запускаем поток # 
+            print(threading.current_thread())
+        
+        return
 
+    def start_parser(self, links: list): # Вызываем сам парсер и передаём туда i-тую ссылку из списка links #
         for i in links:
+            if i == None:
+                print('None, скипаю')
+                continue
             user_id = i[0] 
             url = i[1]
             request_id = i[2]
             print(user_id, url, sep='\n')
-            #thr = threading.Thread(target=AvitoRequest.parser, args=(self, request_id, url, user_id))
-            #thr.start()
+            threading.current_thread()
             AvitoRequest.parser(self, request_id=request_id, url=url, user_id=user_id)
+            
 
 
     def parser(self, request_id: int, url: str, user_id: int) -> tuple:
         self.__session.mount('https://', HTTP20Adapter()) # Позволяет обойти защиту Авито #
         r = self.__session.get(url, data=self.headers, proxies=self.proxies) # Получаем страницу #
         print('status_code:', r.status_code) # Выводим статус код. Если 200, то всё отлично #
-
+        print('Сейчас работает', threading.current_thread())
         raw_page = r.text # Забираем весь текст из страницы #
         
         tree = HTMLParser(raw_page)
@@ -87,7 +111,7 @@ class AvitoRequest:
         
         parsing_data = self.__conn.parsing_data_read()  # считываем всю информацию из таблицы что бы фильтровать товары #
         parsing_data = str(parsing_data)
-        print(type(parsing_data))
+
         
         for key in data:  # Перебираем JSON файл и ищем single-page. В ней храняться данные о товарах #
             if 'single-page' in key:
@@ -97,7 +121,7 @@ class AvitoRequest:
                                 )
                     
                     if examination in parsing_data: # Проверяем. Есть ли уже этот товар в БД #
-                        print(f'[INFO]. Данный товар уже сохранён в БД {item["id"]}')
+                        print(f'[INFO]. Данный товар уже сохранён в БД {item["id"]} {item["title"]}')
                         continue
                     else:
                         full_url = self.url[:-1] + item["urlPath"] # Собираем большую ссылку #

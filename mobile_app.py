@@ -2,11 +2,9 @@ from kivy.core.window import Window
 from kivy. app import App
 from kivy.lang import Builder
 from kivy.metrics import dp
-#from config import host, user, password, db_name, bot_api_token
-from db_connect import db_connect
-from DataBase import DataBase
+from config import host, user, password, db_name, bot_api_token, db_connect
+
 import asyncio
-import pymysql
 
 Window.size = (405, 720)
 Window.clearcolor = (255/255, 255/255, 255/255)

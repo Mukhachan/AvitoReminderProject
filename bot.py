@@ -1,4 +1,4 @@
-from config import bot_api_token, cores, parser_timer
+from config import bot_api_token, cores, parser_timer, db_connect
 from datetime import *
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.utils import *
@@ -6,7 +6,6 @@ import asyncio
 
 from DataBase import DataBase
 from backend import AvitoRequest
-from db_connect import db_connect
 
 
 

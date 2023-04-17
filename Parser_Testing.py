@@ -1,17 +1,17 @@
 from backend import AvitoRequest
-import asyncio
 from os import system
+import threading
 
-from db_connect import db_connect
+from config import cores, db_connect
 
-system('cls')
+#system('cls')
 
-while True:
-    tsk = input('Что запустить?: ')
-    parser = AvitoRequest()
-    if tsk == 'main':
-        parser.main()
-    elif tsk == 'links':
-        requests = db_connect().get_requests()
-        parser.create_links(requests=requests)
-    input("Продолжить?")
+tsk = input('Что запустить?: ')
+parser = AvitoRequest()
+if tsk == 'main':
+    parser.main(cores=cores)
+    
+elif tsk == 'links':
+    requests = db_connect().get_requests()
+    parser.create_links(requests=requests)
+input("Продолжить?\n")

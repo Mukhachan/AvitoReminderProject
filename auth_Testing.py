@@ -1,6 +1,6 @@
-print('<--- --->')
-from db_connect import db_connect
+from config import db_connect
 
+print('<--- --->')
 
 ans = input('Авторизоваться или регистрироваться? (1,2): ')
 conn = db_connect()
