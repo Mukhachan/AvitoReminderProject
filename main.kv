@@ -1,56 +1,58 @@
-BoxLayout:
-    orientation: "vertical"
-    Label:
-        text: "      Добро\nпожаловать!"
-        color:(0,0,0,1)
-        size_hint: None, None
-        size: 120, 220
-        pos_hint: {"center_y": .1, "center_x": .5}
-        font_size: "35sp"
-    Label:
-        text: "Логин"
-        color:(0,0,0,1)
-        size_hint: None, None
-        size: 120, 36
-        pos_hint: {"center_y": .1, "center_x": .5}
-        font_size: "25sp"
-    TextInput:
-        id: login
-        hint_text: "example@gmail.com"
-        size_hint: None, None
-        size: 340, 50
-        pos_hint: {"center_y": .5, "center_x": .5}
-        font_size: "25sp"
-        #on_focus: self.insert_text("Фокус" if args[1] else " Нет")
-    Label:
-        text: "Пароль"
-        color:(0,0,0,1)
-        size_hint: None, None
-        size: 120, 36
-        pos_hint: {"center_y": .1, "center_x": .5}
-        font_size: "25sp"
-    TextInput:
-        id: password
-        size_hint: None, None
-        size: 340, 50
-        pos_hint: {"center_y": .5, "center_x": .5}
-        font_size: "25sp"
-    Label:
-        size_hint: None, None
-        size: 120, 15
-    Button:
-        id: main_button
-        text: "Войти"
-        size_hint: None, None
-        size: 200, 35
-        pos_hint: {"center_y": .45, "center_x": .5}
-        font_size: "25sp"
-        markup:True
-        on_press: app.press_button(*args)
-    Label:
-        text: "\n\n\n\n\n\nЗабыли пароль?\n  Вспоминайте."
-        color:(0,0,0,1)
-        size_hint: None, None
-        size: 120, 250
-        pos_hint: {"center_y": .1, "center_x": .5}
-        font_size: "15sp"
+<LoginScreen>:
+    BoxLayout:
+        orientation: "vertical"
+        Label:
+            text: "      Добро\nпожаловать!"
+            color:(0,0,0,1)
+            size_hint: None, None
+            size: 120, 220
+            pos_hint: {"center_y": .1, "center_x": .5}
+            font_size: "35sp"
+        Label:
+            text: "Логин"
+            color:(0,0,0,1)
+            size_hint: None, None
+            size: 120, 36
+            pos_hint: {"center_y": .1, "center_x": .5}
+            font_size: "25sp"
+        TextInput:
+            id: login
+            hint_text: "example@gmail.com"
+            size_hint: None, None
+            size: 340, 50
+            pos_hint: {"center_y": .5, "center_x": .5}
+            font_size: "25sp"
+            #on_focus: self.insert_text("Фокус" if args[1] else " Нет")
+        Label:
+            text: "Пароль"
+            color:(0,0,0,1)
+            size_hint: None, None
+            size: 120, 36
+            pos_hint: {"center_y": .1, "center_x": .5}
+            font_size: "25sp"
+        TextInput:
+            id: password
+            size_hint: None, None
+            size: 340, 50
+            pos_hint: {"center_y": .5, "center_x": .5}
+            font_size: "25sp"
+        Label:
+            size_hint: None, None
+            size: 120, 15
+        Button:
+            id: main_button
+            text: "Войти"
+            size_hint: None, None
+            size: 200, 35
+            pos_hint: {"center_y": .45, "center_x": .5}
+            font_size: "25sp"
+            markup:True
+            #on_press: app.press_button(*args)
+            border_radius: [8,]
+        Label:
+            text: "\n\n\n\n\n\nЗабыли пароль?\n  Вспоминайте."
+            color:(0,0,0,1)
+            size_hint: None, None
+            size: 120, 250
+            pos_hint: {"center_y": .1, "center_x": .5}
+            font_size: "15sp"
