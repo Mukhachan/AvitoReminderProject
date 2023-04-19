@@ -30,7 +30,6 @@ def profile(event):
     addWindow = Toplevel(root)
     addWindow.title('Профиль')
     addWindow.geometry('500x350')
-
     
     linkBTN = Button(addWindow, text='Подключить телеграмм бота', width='40', height='1')
     linkBTN.place(relx=0.25, rely=0.5)

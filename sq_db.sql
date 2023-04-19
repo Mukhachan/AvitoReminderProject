@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS `avitoreminder`.`parsing_data`(
     title text NOT NULL,
     price integer NOT NULL,
     state text NOT NULL,
+    state_date datetime NOT NULL,
     PRIMARY KEY (id)
 );
 

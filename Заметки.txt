@@ -14,20 +14,13 @@ ASgCAgECAUXGmgwYeyJmcm9tIjoxMzAwLCJ0byI6NjAwMDB9 - 1300/60000 (Через нес
 ASgCAgECAUXGmgwbeyJmcm9tIjoxMzAwMCwidG8iOjYwMDAwMDB9 - 13000/6000000
 
 {
-    'id': 168, 
-    'user_id': 1, 
-    'link': 'https://www.avito.ru/moskva/telefony/iphone_xs_2829904125', 
-    'title': 'iPhone xs', 
-    'price': 13000, 
-    'state': 'sent'
-}, 
-{
     'id': 169, 
     'user_id': 1, 
+    'request_id': 1,
     'link': 'https://www.avito.ru/moskva/telefony/iphone_xr_64gb_2950236597', 
     'title': 'iPhone xr 64gb', 
     'price': 15000, 
     'state': 'sent'
 }
 
-ALTER TABLE `avitoreminder`.`parsing_data` ADD COLUMN `request_id` integer AFTER `user_id`;
+ALTER TABLE `avitoreminder`.`parsing_data` ADD COLUMN `state_date` text NULL AFTER `state`;

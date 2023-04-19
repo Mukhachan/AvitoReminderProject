@@ -1,17 +1,22 @@
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 from random import choice
-from config import crypt_key
+from config import crypt_key, cores, host, user, password, db_name
+from mysql.connector import pooling
+
+
 import string
 import datetime
 import pymysql
 
 class DataBase:
-    def __init__(self, db): # Инициализация глобальных переменных # 
-        self.__connection = db # Подключаемся к бд #
-        self.__cur = db.cursor() # Курсор для запросов в бд # 
+    def __init__(self, connection = None, cursor = None): # Инициализация глобальных переменных # 
+        self.__connection = connection
+        self.__cur = cursor
+
         self.__key = crypt_key # Ключ для шифровки файла cfg #
         self.__f = Fernet(self.__key) # Экземпляр класс Fernet #
+        
 
     def create_table(self) -> bool: # Функция для создания таблиц #
         '''Вспомогательная функция для создания таблиц бд'''
@@ -42,7 +47,7 @@ class DataBase:
         password = generate_password_hash(password)
         self.__cur.execute(f"SELECT * FROM `avitoreminder`.`users` WHERE email = '{email}'")
         ex = self.__cur.fetchone()
-        print(ex)
+        
         if ex:
             print(ex)
             print('Такой пользователь уже зарегистрирован')
@@ -50,7 +55,8 @@ class DataBase:
         
         try:
              # Создаём запись в таблице users #
-            code = DataBase.create_start_code()
+            code = DataBase(db=self.__connection).create_start_code()
+            
             sql_request = f'INSERT INTO `avitoreminder`.`users` (email, password, bot_key) VALUES ("{email}", "{password}", "{code}")'
              
             self.__cur.execute(sql_request)
@@ -113,11 +119,13 @@ class DataBase:
         """ 
         Функция используется для добавления данных в таблицу parsing_data, после парсинга Авито
         """
-
+    
         try:
+            current_time = datetime.datetime.now()
+            
             title = title.replace('"', '')
             title = title.replace('”', '')
-            sql = f'INSERT INTO `avitoreminder`.`parsing_data` VALUES (NULL, {user_id}, {request_id}, "{link}", "{title}", "{price}", "{state}")'
+            sql = f'INSERT INTO `avitoreminder`.`parsing_data` VALUES (NULL, {user_id}, {request_id}, "{link}", "{title}", "{price}", "{state}", "{current_time}")'
             
             self.__cur.execute(sql)
             self.__connection.commit()
@@ -140,9 +148,24 @@ class DataBase:
             
             return res if res else 'Список пуст'
         
+        except Exception as e:
+            print('Ошибка при чтении БД (parsing_data)', e)
+
+    def parsing_data_del_time(self) -> bool:
+        """
+            Эта функция удаляет записи которые были созданы и показаны более 7 дней назад
+        """
+        current_time = datetime.datetime.now()
+        delete_time = current_time - datetime.timedelta(days=1)          
+        try: # Удаляем из БД#
+            self.__cur.execute(f"DELETE * FROM `avitoreminder`.`parsing_data` WHERE `state`='sent' AND `state`< {delete_time}")
+            self.__connection.commit()
+
+            print('Удалили много записей которые были созданы более 7 дней: ', self.__connection.info)
+
         except:
-            print('Ошибка при чтении БД (parsing_data)')
-          
+            pass
+
     def set_request(self, user_id: int, title: str, price_from: int | None, 
                     price_up_to: int | None, add_description: str | None, 
                     city: str, delivery: int, exception: str | None ) -> tuple: # Добавление запроса для Авито #
@@ -204,7 +227,7 @@ class DataBase:
             return ("Файл cfg.cfg пуст", False)
     
         dt = datetime.datetime.now()
-        dt_string = dt.strftime("%d/%m/%Y %H:%M:%S")
+        dt_string = dt.strftime("%d/%m/%Y")
 
         sql = (
             f"SELECT id FROM `avitoreminder`.`user_state` WHERE (`user_id` = '{user_id}')"
@@ -275,9 +298,9 @@ class DataBase:
         if res:
             DataBase.create_start_code()
 
-        return (code, f'http://t.me/Avito_Parser_1kbot?start={code}')
+        return code
     
-    def get_bot_key(self, id: int) -> str: # Получаем бот кей из бд # 
+    def get_bot_key(self, id: int) -> tuple: # Получаем бот кей из бд # 
         """ Получаем bot_key из бд c помощью ID 
         """
         sql = (
@@ -298,7 +321,6 @@ class DataBase:
 
         else:
             return None
-
 
     def get_userid_by_bot_key(self, bot_key: str) -> int: # получаем user_id с помощью bot_key #
         """ Берём ID пользователя из записи с нужным на bot_key """
@@ -321,9 +343,9 @@ class DataBase:
 
         id = DataBase.get_userid_by_bot_key(self, bot_key) # Сохраняем ID #
 
-         # Обновляем запись с пользователем и записываем в bot_key лid чата в телеграмме #
+         # Обновляем запись с пользователем и записываем в bot_key id чата в телеграмме #
         sql = (
-            f'UPDATE `avitoreminder`.`users` SET `bot_key`="{tg_id}" WHERE (`id` = {id});'
+            f'UPDATE `avitoreminder`.`users` SET `bot_key`= {tg_id} WHERE (`id` = {id[0]});'
         )
         self.__cur.execute(sql)
         self.__connection.commit()

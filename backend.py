@@ -1,32 +1,33 @@
+from transliterate import translit
 import json
 import requests
 import threading
 import math
 
+
 from selectolax.parser import HTMLParser
 from urllib.parse import unquote
 from random import randint
 
-from transliterate import translit
-
-from config import proxies, cookie, db_connect
-
 import collections.abc
-
 collections.Iterable = collections.abc.Iterable
 collections.Mapping = collections.abc.Mapping
 collections.MutableSet = collections.abc.MutableSet
 collections.MutableMapping = collections.abc.MutableMapping
 from hyper.contrib import HTTP20Adapter
 
+from config import proxies, cookie, cores
+from mysql.connector.pooling import MySQLConnectionPool
+from DataBase import DataBase
 
 class AvitoRequest:
-    def __init__(self):
-        self.__conn = db_connect()
-        print('Парсер подключился к бд:', self.__conn)
+    def __init__(self, Dbase: DataBase, db_pool: MySQLConnectionPool ):
+        self.db = Dbase
+        self.pool = db_pool
+
         self.__session = requests.Session()
         self.url = "https://www.avito.ru/"
-
+        self.lock = threading.Lock()
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36",
             "Accept-Language": "ru",
@@ -38,7 +39,8 @@ class AvitoRequest:
         }
         print("Сейчас используем ip: ", self.proxies['https'])
 
-    def split_list(raw_links: list, cores: int):
+
+    def split_list(self, raw_links: list):
         n = math.ceil(len(raw_links) / cores)
 
         for x in range(0, len(raw_links), n):
@@ -47,46 +49,63 @@ class AvitoRequest:
             if len(e_c) < n:
                 e_c = e_c + [None for y in range(n - len(e_c))]
             yield e_c
- 
-        
-    def main(self, cores: int) -> bool:
+
+
+    def main(self) -> bool:
         """
             Это мэйн функция которая вызывается ботом. Она запускает функцию генерации ссылок
             и соответственно сам парсер
             Она принимает параметр cores который определяет количество потоков для работы парсера.
                 Пока что парсер однопоточный
         """
+        print('Количество потоков:', cores)
         print('Парсер запустился')
-        
-        requests = self.__conn.get_requests()
-        raw_links = AvitoRequest.create_links(self, requests=requests) # Получаем голый список ссылок #
-        links = list(AvitoRequest.split_list(raw_links, cores)) # Разбиваем список на cores частей
-        
+        connection = self.pool.get_connection()
+        cursor = connection.cursor(dictionary = True)
+        requests = self.db(connection, cursor).get_requests()
+        cursor.close()
+        connection.close()
+
+        raw_links = self.create_links(requests=requests) # Получаем голый список ссылок #
+        links = list(self.split_list(raw_links=raw_links)) # Разбиваем список на cores частей
+        threads = []        
         # Создаём cores потоков #
         for i in range(cores): 
             print(i)
             # создаём поток и вызываем start_parser, передаём туда i-тый список  #
-            threading.Thread(target=AvitoRequest.start_parser, args=(self, links[i]), daemon=True).start()
+            thd = threading.Thread(target=self.start_parser, args=(links[i],))
+            thd.start()
+            threads.append(thd)
             # Запускаем поток # 
             print(threading.current_thread())
-        
+
+        for t in threads:
+            t.join()
+        cursor.close()
+        connection.close()
         return
 
+
     def start_parser(self, links: list): # Вызываем сам парсер и передаём туда i-тую ссылку из списка links #
+        connection = self.pool.get_connection()
+        cursor = connection.cursor(dictionary = True)
         for i in links:
-            if i == None:
-                print('None, скипаю')
-                continue
-            user_id = i[0] 
-            url = i[1]
-            request_id = i[2]
-            print(user_id, url, sep='\n')
-            threading.current_thread()
-            AvitoRequest.parser(self, request_id=request_id, url=url, user_id=user_id)
-            
+            with self.lock:    
+                if i == None:
+                    print('None, скипаю')
+                    continue
+                user_id = i[0] 
+                url = i[1]
+                request_id = i[2]
+                print(user_id, url, sep='\n')
+                threading.current_thread()
+                self.parser(
+                    request_id=request_id, url=url, user_id=user_id, connection=connection, cursor=cursor
+                )
 
 
-    def parser(self, request_id: int, url: str, user_id: int) -> tuple:
+
+    def parser(self, request_id: int, url: str, user_id: int, connection, cursor) -> tuple:
         self.__session.mount('https://', HTTP20Adapter()) # Позволяет обойти защиту Авито #
         r = self.__session.get(url, data=self.headers, proxies=self.proxies) # Получаем страницу #
         print('status_code:', r.status_code) # Выводим статус код. Если 200, то всё отлично #
@@ -109,7 +128,7 @@ class AvitoRequest:
                 """
                 break # Выходим из цикла так как нашли нужный скрипт #
         
-        parsing_data = self.__conn.parsing_data_read()  # считываем всю информацию из таблицы что бы фильтровать товары #
+        parsing_data = self.db(connection, cursor).parsing_data_read()  # считываем всю информацию из таблицы что бы фильтровать товары #
         parsing_data = str(parsing_data)
 
         
@@ -117,7 +136,7 @@ class AvitoRequest:
             if 'single-page' in key:
                 for item in data[key]["data"]["catalog"]["items"]: # берём информацию о конкретном товаре по порядку #
                     examination = (
-                        f"'user_id': {user_id}, 'request_id': {request_id}, 'link': 'https://www.avito.ru{item['urlPath']}'"
+                    f"'user_id': {user_id}, 'request_id': {request_id}, 'link': 'https://www.avito.ru{item['urlPath']}'"
                                 )
                     
                     if examination in parsing_data: # Проверяем. Есть ли уже этот товар в БД #
@@ -126,7 +145,7 @@ class AvitoRequest:
                     else:
                         full_url = self.url[:-1] + item["urlPath"] # Собираем большую ссылку #
                         price = item["priceDetailed"]['value'] # Берём цену #
-                        self.__conn.parsing_data_add(
+                        self.db(connection, cursor).parsing_data_add(
                             user_id=user_id, request_id = request_id, link=full_url, 
                             title=item["title"], price=price, state='added')
                         
@@ -136,7 +155,7 @@ class AvitoRequest:
             Эта функция генерирует список ссылок(без пагинации) которые надо распарсить возвращает его
         """
         links = []
-        
+        print(requests)
         for i, el in enumerate(requests):
             city = translit(el["city"].lower(), 'ru', reversed=True)
             title = el['title']

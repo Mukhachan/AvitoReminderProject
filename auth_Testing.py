@@ -1,9 +1,9 @@
-from config import db_connect
+from config import db_connect_old
 
 print('<--- --->')
 
 ans = input('Авторизоваться или регистрироваться? (1,2): ')
-conn = db_connect()
+conn = db_connect_old()
 
 if ans == '1':
     print("Авторизация\n")
@@ -27,7 +27,6 @@ if ans == '1':
             elif ans == 'n':
                 print("Ну всё тогда")
                 input('enter')
-                
                 break
 
             else:
@@ -39,7 +38,7 @@ elif ans == '2':
         login = input('Введи email/логин: ')
         password1 = input('Введи пароль: ')
         password2 = input('Повторно введи пароль: ')
-        if password1.strip == password2.strip:
+        if password1 == password2:
             print('Регистрирую\n')
             conn.create_user(email=login, password=password1)
             break

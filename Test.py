@@ -1,4 +1,4 @@
-import threading
+'''import threading
 import math
 
 from config import cores, db_connect
@@ -37,4 +37,34 @@ def start_threads(links):
 
 links = list(split_list(raw_links, cores))
 
-start_threads(links)
+start_threads(links)'''
+
+from mysql.connector.pooling import MySQLConnectionPool
+from config import db_connect_pool
+
+
+class DataBase:
+    def __init__(self, connection = None, cursor = None) -> None:
+        self.__connection = connection
+        self.__cur = cursor
+
+    def function(self):
+        self.__cur.close()
+        self.__connection.close()
+        print('Соединение и курсор вроде как закрыты')
+
+    def __del__(self):
+        print('Уничтожаем соединение и курсор')
+
+class AvitoRequest:
+    def __init__(self, Dbase: DataBase, db_pool: MySQLConnectionPool) -> None:
+        self.DBase = Dbase
+        self.pool = db_pool
+
+    def function(self):
+        connection = self.pool.get_connection()
+        cursor = connection.cursor()
+
+        self.DBase(connection=connection, cursor=cursor).function()
+
+parser = AvitoRequest(DataBase, db_connect_pool()).function()

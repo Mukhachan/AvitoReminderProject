@@ -1,7 +1,7 @@
-from config import db_connect
+from config import db_connect_old
 # Подключаемся к бд и получаем экземпляр класса DataBase в лице "conn" #
-conn = db_connect()
-
+conn = db_connect_old()
+print(conn)
 while True:
     print("\n[INFO] Выберите функцию для проверки\n")
     print("(1). create_table(self) -> bool\n",
@@ -81,5 +81,3 @@ while True:
         state = input()
         conn.update_parsing_state(id, state)
 
-
-    conn = db_connect()
