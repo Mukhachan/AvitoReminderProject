@@ -1,9 +1,10 @@
 from transliterate import translit
+from transliterate.exceptions import LanguagePackNotFound
 import json
 import requests
 import threading
 import math
-
+from time import sleep
 
 from selectolax.parser import HTMLParser
 from urllib.parse import unquote
@@ -15,10 +16,13 @@ collections.Mapping = collections.abc.Mapping
 collections.MutableSet = collections.abc.MutableSet
 collections.MutableMapping = collections.abc.MutableMapping
 from hyper.contrib import HTTP20Adapter
+from requests.exceptions import RetryError
+from urllib3.util.retry import Retry
 
 from config import proxies, cookie, cores
 from mysql.connector.pooling import MySQLConnectionPool
 from DataBase import DataBase
+
 
 class AvitoRequest:
     def __init__(self, Dbase: DataBase, db_pool: MySQLConnectionPool ):
@@ -27,7 +31,6 @@ class AvitoRequest:
 
         self.__session = requests.Session()
         self.url = "https://www.avito.ru/"
-        self.lock = threading.Lock()
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36",
             "Accept-Language": "ru",
@@ -37,28 +40,39 @@ class AvitoRequest:
             'https' : proxies[randint(0, len(proxies) - 1)],
             'http' : proxies[randint(0, len(proxies) - 1)]
         }
+        self.retry_strategy = Retry(
+                                    total=3,
+                                    backoff_factor=1,
+                                    status_forcelist=[429, 500, 502, 503, 504],
+                                    method_whitelist=["GET"],
+                                )
+        
         print("Сейчас используем ip: ", self.proxies['https'])
 
 
-    def split_list(self, raw_links: list):
-        n = math.ceil(len(raw_links) / cores)
-
-        for x in range(0, len(raw_links), n):
-            e_c = raw_links[x : n + x]
-
-            if len(e_c) < n:
-                e_c = e_c + [None for y in range(n - len(e_c))]
-            yield e_c
-
+    def split_list(self, raw_links):
+        part_len = math.ceil(len(raw_links)/cores)
+        return [raw_links[part_len*k:part_len*(k+1)] for k in range(cores)]
 
     def main(self) -> bool:
+        try:
+            mainthread = threading.Thread(target=self.threads)
+            mainthread.start()
+            print('Инициализирую основной поток:', threading.current_thread())
+            mainthread.join()
+        except:
+            print('В основном потоке появилась ошибка')
+            return False
+        return True
+                 
+    def threads(self) -> bool:
         """
             Это мэйн функция которая вызывается ботом. Она запускает функцию генерации ссылок
             и соответственно сам парсер
             Она принимает параметр cores который определяет количество потоков для работы парсера.
-                Пока что парсер однопоточный
+
         """
-        print('Количество потоков:', cores)
+        print('Количество потоков:', cores, end='\n\n')
         print('Парсер запустился')
         connection = self.pool.get_connection()
         cursor = connection.cursor(dictionary = True)
@@ -69,45 +83,56 @@ class AvitoRequest:
         raw_links = self.create_links(requests=requests) # Получаем голый список ссылок #
         links = list(self.split_list(raw_links=raw_links)) # Разбиваем список на cores частей
         threads = []        
-        # Создаём cores потоков #
-        for i in range(cores): 
-            print(i)
+        print('\nСПИСОК ССЫЛОК: ', links)
+        # Создаём потоки #
+        for i in links: 
+            sleep(1)
             # создаём поток и вызываем start_parser, передаём туда i-тый список  #
-            thd = threading.Thread(target=self.start_parser, args=(links[i],))
+            if len(i) == 0:
+                continue
+            thd = threading.Thread(target=self.start_parser, args=(i,))
             thd.start()
             threads.append(thd)
             # Запускаем поток # 
-            print(threading.current_thread())
-
+            print('Сейчас обрабатываетcя ссылка', i, 'В треде:', threading.current_thread())
+            
+        print('\nСПИСОК ПОТОКОВ:', threads, end='\n\n')
+    
         for t in threads:
             t.join()
         cursor.close()
         connection.close()
-        return
+        
+        return True
 
 
     def start_parser(self, links: list): # Вызываем сам парсер и передаём туда i-тую ссылку из списка links #
         connection = self.pool.get_connection()
         cursor = connection.cursor(dictionary = True)
-        for i in links:
-            with self.lock:    
-                if i == None:
-                    print('None, скипаю')
-                    continue
-                user_id = i[0] 
-                url = i[1]
-                request_id = i[2]
-                print(user_id, url, sep='\n')
-                threading.current_thread()
-                self.parser(
-                    request_id=request_id, url=url, user_id=user_id, connection=connection, cursor=cursor
-                )
 
+        for i in links:
+            if len(i) == 0:
+                print('0, скипаю')
+                continue
+            user_id = i[0] 
+            url = i[1]
+            request_id = i[2]
+            print(user_id, url, sep='\n')
+            threading.current_thread()
+            self.parser(
+                request_id=request_id, url=url, user_id=user_id, connection=connection, cursor=cursor
+            )
 
 
     def parser(self, request_id: int, url: str, user_id: int, connection, cursor) -> tuple:
-        self.__session.mount('https://', HTTP20Adapter()) # Позволяет обойти защиту Авито #
-        r = self.__session.get(url, data=self.headers, proxies=self.proxies) # Получаем страницу #
+        self.__session.mount('https://', HTTP20Adapter(max_retries = self.retry_strategy)) # Позволяет обойти защиту Авито #
+        try:
+            r = self.__session.get(url=url, data=self.headers, proxies=self.proxies) # Получаем страницу #
+            if r.status_code != 200:
+                print("Запрос потока", threading.current_thread(), "не сработал и выдал код:", r.status_code)
+        except RetryError:
+            print("Ошибка после повтора")
+
         print('status_code:', r.status_code) # Выводим статус код. Если 200, то всё отлично #
         print('Сейчас работает', threading.current_thread())
         raw_page = r.text # Забираем весь текст из страницы #
@@ -155,15 +180,21 @@ class AvitoRequest:
             Эта функция генерирует список ссылок(без пагинации) которые надо распарсить возвращает его
         """
         links = []
-        print(requests)
-        for i, el in enumerate(requests):
-            city = translit(el["city"].lower(), 'ru', reversed=True)
-            title = el['title']
-            user_id = el["user_id"] 
-            request_id = el["id"]
-            url = f'{self.url}{city}?q={title}'
-            print(i, url, request_id)
-
-            links.append((user_id, url, request_id))
         
+        for i, el in enumerate(requests):
+            try:
+                city = translit(value=el["city"].lower(), language_code='ru', reversed=True)
+                title = el['title']
+                user_id = el["user_id"] 
+                request_id = el["id"]
+                url = f'{self.url}{city}?q={title}'
+                print(i, url, request_id)
+
+                links.append((user_id, url, request_id))
+            except LanguagePackNotFound:
+                print("\nLanguagePackNotFound, но мы постараемся запустить функцию заново\n")
+                sleep(1)
+                self.create_links(requests)
+                break
+
         return links

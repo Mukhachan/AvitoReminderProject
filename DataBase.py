@@ -1,9 +1,7 @@
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 from random import choice
-from config import crypt_key, cores, host, user, password, db_name
-from mysql.connector import pooling
-
+from config import crypt_key
 
 import string
 import datetime
@@ -55,7 +53,7 @@ class DataBase:
         
         try:
              # Создаём запись в таблице users #
-            code = DataBase(db=self.__connection).create_start_code()
+            code = self.create_start_code()
             
             sql_request = f'INSERT INTO `avitoreminder`.`users` (email, password, bot_key) VALUES ("{email}", "{password}", "{code}")'
              
@@ -70,7 +68,7 @@ class DataBase:
              # Сохраняем зашифрованый ID в файл #
             with open('cfg.cfg', 'wb') as file:
                 file.write(self.__f.encrypt(id.encode()))
-            DataBase.set_user_state(self, id)
+            self.set_user_state(id)
             print("Пользователь добавлен")
             return True
         except pymysql.err as Error:
@@ -102,9 +100,9 @@ class DataBase:
         hash_psw = res['password']
 
         if check_password_hash(hash_psw, password):
-            DataBase.set_user_state(self, id)
+            self.set_user_state(id)
             print('Успешная авторизация')
-            bot_key = DataBase.get_bot_key(self, id=id)
+            bot_key = self.get_bot_key(id=id)
             if bot_key[0] == 'chat_id':
                 print('(get_user) тг привязан')
                 return ("Успешная авторизация", True, id, True)
@@ -296,7 +294,7 @@ class DataBase:
 
         print(res)
         if res:
-            DataBase.create_start_code()
+            self.create_start_code()
 
         return code
     
@@ -341,7 +339,7 @@ class DataBase:
             Получает на вход старткод и ID чата. записывает вместо ячейки bot_key, ID чата в тг
         """
 
-        id = DataBase.get_userid_by_bot_key(self, bot_key) # Сохраняем ID #
+        id = self.get_userid_by_bot_key(bot_key) # Сохраняем ID #
 
          # Обновляем запись с пользователем и записываем в bot_key id чата в телеграмме #
         sql = (

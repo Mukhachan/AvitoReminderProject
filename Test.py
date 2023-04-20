@@ -38,7 +38,7 @@ def start_threads(links):
 links = list(split_list(raw_links, cores))
 
 start_threads(links)'''
-
+"""
 from mysql.connector.pooling import MySQLConnectionPool
 from config import db_connect_pool
 
@@ -68,3 +68,31 @@ class AvitoRequest:
         self.DBase(connection=connection, cursor=cursor).function()
 
 parser = AvitoRequest(DataBase, db_connect_pool()).function()
+"""
+
+import requests
+from requests.adapters import HTTPAdapter
+from requests.exceptions import RetryError
+from urllib3.util.retry import Retry
+
+session = requests.Session()
+
+retry_strategy = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    method_whitelist=["GET"],
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+session.mount("http://", adapter)
+session.mount("https://", adapter)
+
+try:
+    response = session.get("https://example.com")
+
+    if response.status_code == 200:
+        print("Request succeeded")
+    else:
+        print(f"Request failed with status {response.status_code}")
+except RetryError:
+    print("Request failed after retrying")

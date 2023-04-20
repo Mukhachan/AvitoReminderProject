@@ -15,7 +15,7 @@ if ans == '1':
         report = conn.get_user(email=login, password=password)
         
         if report[3] == True:
-            print('Телеграм уже привязан')
+            pass
         else:
             ans = input('Привязать телеграм? (y/n): ')
         
