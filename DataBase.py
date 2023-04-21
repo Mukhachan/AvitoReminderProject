@@ -154,15 +154,40 @@ class DataBase:
             Эта функция удаляет записи которые были созданы и показаны более 7 дней назад
         """
         current_time = datetime.datetime.now()
-        delete_time = current_time - datetime.timedelta(days=1)          
+        delete_time = current_time - datetime.timedelta(days=7)          
         try: # Удаляем из БД#
-            self.__cur.execute(f"DELETE * FROM `avitoreminder`.`parsing_data` WHERE `state`='sent' AND `state`< {delete_time}")
+            self.__cur.execute(f"DELETE FROM `avitoreminder`.`parsing_data` WHERE `state`='sent' AND `state_date`< '{delete_time}'")
             self.__connection.commit()
 
-            print('Удалили много записей которые были созданы более 7 дней: ', self.__connection.info)
+            print('\nУдалили много записей которые были созданы более 7 дней назад')
+            return True
+        
+        except Exception as e:
+            print('При удалении возникла ошибка: ', e)
+            return False
 
-        except:
-            pass
+    def del_parsing_data_without_requests(self) -> bool:
+        """
+            Эта функция удаляет данные за которыми не следят
+        """
+        parsing_data = self.parsing_data_read()
+        
+        for i in parsing_data:
+            pd_len = len(parsing_data)
+            x = self.get_request(i['request_id'])
+            if x == 'Список пуст':
+                print(i['request_id'], x)
+                try:
+                    self.__cur.execute(
+                        f'DELETE FROM `avitoreminder`.`parsing_data` WHERE `request_id` = {i["request_id"]}'
+                    )
+                    self.__connection.commit()
+                    
+                    parsing_data.remove(i)
+                except Exception as e:
+                    print('Появилась непонятная ошибка', e)
+
+        print('Из parsing_data удалено ненужных товаров:', pd_len-len(parsing_data), '\n')
 
     def set_request(self, user_id: int, title: str, price_from: int | None, 
                     price_up_to: int | None, add_description: str | None, 
@@ -363,7 +388,8 @@ class DataBase:
     
     def get_request(self, id: int) -> dict:
         """
-            Получает один реквест для работы фильтра
+            На вход получает ID реквеста. Если он есть, то возвращает его.
+            Если нет то пишет 'Список пуст'
         """
         try:
             sql = (

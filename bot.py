@@ -1,4 +1,4 @@
-from config import bot_api_token, cores, parser_timer, db_connect_pool, db_connect_old
+from config import bot_api_token, parser_timer, garbage_collector_time, db_connect_pool, db_connect_old
 from datetime import *
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.utils import *
@@ -10,7 +10,6 @@ from DataBase import DataBase
 # Подключаемся к бд и получаем экземпляр класса DataBase в лице "conn" #
 bot = Bot(token=bot_api_token)
 dp = Dispatcher(bot)
-
 
 @dp.message_handler(commands=['start'])
 async def start(message: types.Message):
@@ -53,14 +52,18 @@ async def start(message: types.Message):
         await message.answer("Вы не зарегистрированны, зайдите по своей персональной ссылке")
 
 
-@dp.message_handler() # Просто Эхо для проверки бота # 
+@dp.message_handler()
 async def echo_message(message: types.Message):
+    """
+        Эхо функция 
+    """
     print(str(message.chat.id), ':', message.text)
     await bot.send_message(message.from_user.id, message.text)
 
 
 async def parsing_data_filter(requests: list) -> tuple:
-    """ Функция фильтрации. Передаём сюда список с запросами
+    """ 
+        Функция фильтрации. Передаём сюда список с запросами
         requests это список из словарей
     """
     if requests == 'Список пуст':
@@ -103,6 +106,9 @@ async def parsing_data_filter(requests: list) -> tuple:
 
 
 async def schedule_handler():
+    """
+        Функция запускающая парсер
+    """
     while True:
         print('Запускаю парсер')
         start = time.time()
@@ -111,15 +117,27 @@ async def schedule_handler():
         db_pool = db_connect_pool()
         parser = AvitoRequest(DBase, db_pool)
         parser.main() # Вызываем парсер и передаём количество потоков #
+            
             # Вызываем функцию фильтрации, передаём данные из paring_data #
-
         await parsing_data_filter(requests = conn.parsing_data_read()) 
         end =  time.time() - start
         print('Общее время работы парсера и отправки сообщений', end)
         del DBase
         del db_pool
-
         await asyncio.sleep(parser_timer)
+
+
+async def database_garbage_collector():
+    """
+        Функция очистки базы данных
+    """
+
+    while True:
+        print('Запускаю функцию очистки базы данных...')
+        conn.parsing_data_del_time()
+        conn.del_parsing_data_without_requests()
+        await asyncio.sleep(garbage_collector_time)
+
 if __name__ == '__main__':
     print('Бот запущен\n')
     
@@ -127,5 +145,6 @@ if __name__ == '__main__':
     print('[INFO] База Данных: ', conn)
     
     loop = asyncio.get_event_loop()
+    loop.create_task(database_garbage_collector())
     loop.create_task(schedule_handler())
     loop.create_task(executor.start_polling(dp, skip_updates=True))
