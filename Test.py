@@ -18,17 +18,6 @@ def parser(links):
         else:
             print('None, так что скипаю')
 
-def split_list(raw_links, cores):
-    n = math.ceil(len(raw_links) / cores)
-
-    for x in range(0, len(raw_links), n):
-        e_c = raw_links[x : n + x]
-
-        if len(e_c) < n:
-            e_c = e_c + [None for y in range(n - len(e_c))]
-        yield e_c
-
-
 def start_threads(links):
     for i in range(cores):
         thread = threading.Thread(target=parser, args=(links[i],))
@@ -69,30 +58,48 @@ class AvitoRequest:
 
 parser = AvitoRequest(DataBase, db_connect_pool()).function()
 """
+"""
+id: int, title: str | None, price_from: int | None,
+    price_up_to: int | None, city: str | None, add_description: str | None,
+                                delivery: int | None, exception: str | None
+"""
+def update_record(id: int, title: str | None, price_from: int | None,
+                                price_up_to: int | None, city: str | None, add_description: str | None,
+                                delivery: int | None, exception: str | None):
+    update_fields = []
+    if title is not None:
+        update_fields.append("title = '{}'".format(title))
+    if price_from is not None:
+        update_fields.append("price_from = '{}'".format(price_from))
+    if price_up_to is not None:
+        update_fields.append("price_up_to = '{}'".format(price_up_to))
+    if city is not None:
+        update_fields.append("city = '{}'".format(city))
+    if add_description is not None:
+        update_fields.append("add_description = '{}'".format(add_description))
+    if delivery is not None:
+        update_fields.append("delivery = '{}'".format(delivery))
+    if exception is not None:
+        update_fields.append("exception = '{}'".format(exception))
 
-import requests
-from requests.adapters import HTTPAdapter
-from requests.exceptions import RetryError
-from urllib3.util.retry import Retry
+    if not update_fields:
+        # ничего изменять не нужно
+        return
 
-session = requests.Session()
+    update_query = "UPDATE `avitoreminder`.`requests` SET {} WHERE id = {}".format(
+        ", ".join(update_fields), id)
 
-retry_strategy = Retry(
-    total=3,
-    backoff_factor=1,
-    status_forcelist=[429, 500, 502, 503, 504],
-    method_whitelist=["GET"],
-)
-adapter = HTTPAdapter(max_retries=retry_strategy)
-session.mount("http://", adapter)
-session.mount("https://", adapter)
+    # выполнить SQL-запрос в базе данных
+    # connection.execute(update_query)
+def update_record(id: int, title = None, price_from = None, price_up_to = None, 
+                  city = None, add_description = None, delivery = None, exception = None):
+    update_fields = []
 
-try:
-    response = session.get("https://example.com")
+    for field in ['title', 'price_from', 'price_up_to', 'city', 'add_description', 'delivery', 'exception']:
+        if locals()[field] is not None:
+            update_fields.append(f"{field} = '{locals()[field]}'")
 
-    if response.status_code == 200:
-        print("Request succeeded")
-    else:
-        print(f"Request failed with status {response.status_code}")
-except RetryError:
-    print("Request failed after retrying")
+    if not update_fields:
+        return
+
+    update_query = f"UPDATE `avitoreminder`.`requests` SET {', '.join(update_fields)} WHERE id = {id}"

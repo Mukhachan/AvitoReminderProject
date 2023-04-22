@@ -400,3 +400,67 @@ class DataBase:
             return res if res else 'Список пуст'
         except Exception as e:
             print('[INFO]. Возникла ошибка в функции get_request:', e)
+
+    def get_request_by_userID(self, user_id: int) -> list:
+        """
+            Эта функция возвращает список запросов за которыми следит пользователь.
+        """
+        try:
+            sql = (
+                f'SELECT * FROM `avitoreminder`.`requests` WHERE user_id = {user_id}'
+            )
+            self.__cur.execute(sql)
+            res = self.__cur.fetchall()
+            print(len(res))
+            return res if res else ('Список пуст')
+        except Exception as e:
+            print('Возникла ошибка (get_request_by_userID)', e)
+  
+    def del_request_with_id(self, request_id: int) -> tuple:
+        """
+            Эта функция удаляем запрос с переданым ему ID
+
+            Возвращает кортеж вида ('Сообщение', bool)
+        """
+        try:
+            sql = (
+                f'DELETE FROM `avitoreminder`.`requests` WHERE id = {request_id} '
+            )
+            self.__cur.execute(sql)
+            self.__connection.commit()
+            count = self.__cur.rowcount
+            if count == 0:
+                print('Такой реквест не найден')
+                return ('Такого товара нет. Обновите список', False)
+            else:
+                print('Товар успешно удалён')
+                return ('Товар успешно удалён', True)
+        
+        except Exception as e :
+            print('Возникла ошибка', e)
+
+    def update_request_with_id(self, id: int, title: str | None, price_from: int | None,
+                                price_up_to: int | None, city: str | None, add_description: str | None,
+                                delivery: int | None, exception: str | None) -> tuple:
+        """
+            Эта функция принимает все значения которые можно изменить в реквесте. 
+            Либо изменяется значение либо, оно None, тогда оно остаётся прежним.
+        """
+        update_fields = []
+        try:
+            for field in ['title', 'price_from', 'price_up_to', 'city', 'add_description', 'delivery', 'exception']:
+                if locals()[field] is not None:
+                    update_fields.append(f"{field} = '{locals()[field]}'")
+
+            if not update_fields:
+                return ('Ничего изменять не пришлось', False)
+
+            sql = f"UPDATE `avitoreminder`.`requests` SET {', '.join(update_fields)} WHERE id = {id}"
+
+            self.__cur.execute(sql)
+            self.__connection.commit()
+            return ('Данные успешно обновлены', True)
+        
+        except Exception as e:
+            print('Возникла ошибка (update_request_with_id): ', e)
+            return ('При выполнении запроса возникла ошибка', False)

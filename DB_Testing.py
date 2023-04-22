@@ -1,8 +1,9 @@
 from config import db_connect_old
 # Подключаемся к бд и получаем экземпляр класса DataBase в лице "conn" #
-conn = db_connect_old()
-print(conn)
+
 while True:
+    conn = db_connect_old()
+    print('\n', conn)
     print("\n[INFO] Выберите функцию для проверки\n")
     print("(1). create_table(self) -> bool\n",
           "(2). db_close(self) -> bool\n",
@@ -20,7 +21,9 @@ while True:
           "(12). get_bot_key(self, id: int) -> str:\n",
           "(13). get_userid_by_bot_key(self, bot_key: str) -> int\n",
           "(14). set_bot_key(self, bot_key: str, tg_id: str) -> int\n",
-          "(15). update_parsing_state(self, user_id, state)"
+          "(15). update_parsing_state(self, user_id, state)\n",
+          "(16). del_request_with_id(self, request_id: int) -> tuple\n",
+          "(17). get_request_by_userID(self, user_id: int) -> list\n"
           )
     x = input('Цыферка: ')
 
@@ -80,4 +83,9 @@ while True:
         id = int(input())
         state = input()
         conn.update_parsing_state(id, state)
+    elif x == '16': # del_request_with_id #
+        conn.del_request_with_id(input('Введи id реквеста: '))
+    elif x == '17': # get_request_by_userID #
+        print(conn.get_request_by_userID(input('Введи user_id: ')))
 
+    del conn
