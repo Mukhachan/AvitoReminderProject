@@ -23,7 +23,10 @@ while True:
           "(14). set_bot_key(self, bot_key: str, tg_id: str) -> int\n",
           "(15). update_parsing_state(self, user_id, state)\n",
           "(16). del_request_with_id(self, request_id: int) -> tuple\n",
-          "(17). get_request_by_userID(self, user_id: int) -> list\n"
+          "(17). get_request_by_userID(self, user_id: int) -> list\n",
+          "(18). update_request_with_id(self, id: int, title: str | None, price_from: int | None,\n",
+          "         price_up_to: int | None, city: str | None, add_description: str | None,\n",
+          "         delivery: int | None, exception: str | None) -> tuple\n"
           )
     x = input('Цыферка: ')
 
@@ -87,5 +90,26 @@ while True:
         conn.del_request_with_id(input('Введи id реквеста: '))
     elif x == '17': # get_request_by_userID #
         print(conn.get_request_by_userID(input('Введи user_id: ')))
+    elif x == '18': # update_request_with_id #
+        id = int(input('id: '))
+        title = input('Название: ')
+        title = None if title == '' else title
+        price_from = input('Цена от: ')
+        price_from = None if price_from == '' else int(price_from)
+        price_up_to = input('Цена до: ')
+        price_up_to = None if price_up_to == '' else int(price_up_to)
+        city = input('Город: ')
+        city = None if city == '' else city
+        add_description = input('Добавить в описание: ')
+        add_description = None if add_description == '' else add_description
+        delivery = input('Доставка: ')
+        delivery = None if delivery == '' else delivery 
+        exception = input('Исключить: ')
+        exception = None if exception == '' else exception
 
+        print(conn.update_request_with_id(id, title=title, price_from=price_from,
+                                          price_up_to=price_up_to, city=city, add_description=add_description,
+                                          delivery=delivery,exception=exception
+                                          ))
+        
     del conn

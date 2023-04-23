@@ -2,7 +2,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 from random import choice
 from config import crypt_key
-
+from time import sleep
 import string
 import datetime
 import pymysql
@@ -127,7 +127,7 @@ class DataBase:
             
             self.__cur.execute(sql)
             self.__connection.commit()
-            print("[INFO]. Данные успешно добавлены")
+            print("[INFO]. Товар добавлен", title)
         except pymysql.err.InterfaceError:
             pass  
         
@@ -166,28 +166,35 @@ class DataBase:
             print('При удалении возникла ошибка: ', e)
             return False
 
-    def del_parsing_data_without_requests(self) -> bool:
+    def del_parsing_data_without_requests(self, pd_len_after: int = 0 ) -> bool:
         """
             Эта функция удаляет данные за которыми не следят
         """
+
         parsing_data = self.parsing_data_read()
+        if len(parsing_data) == 0:
+            print('Таблица parsing_data пуста')
+            return False
         
         for i in parsing_data:
-            pd_len = len(parsing_data)
             x = self.get_request(i['request_id'])
             if x == 'Список пуст':
-                print(i['request_id'], x)
+                print(i['request_id'], "Удаляю")
                 try:
                     self.__cur.execute(
                         f'DELETE FROM `avitoreminder`.`parsing_data` WHERE `request_id` = {i["request_id"]}'
                     )
                     self.__connection.commit()
-                    
-                    parsing_data.remove(i)
+
                 except Exception as e:
                     print('Появилась непонятная ошибка', e)
+                    return False
+            if x != 'Список пуст':
+                print(i['request_id'], 'удалять не будем')
+        pd_len_after = len(parsing_data) - len(self.parsing_data_read())
 
-        print('Из parsing_data удалено ненужных товаров:', pd_len-len(parsing_data), '\n')
+        print('Из parsing_data удалено ненужных товаров:', pd_len_after, '\n')
+        return True if pd_len_after != 0 else False
 
     def set_request(self, user_id: int, title: str, price_from: int | None, 
                     price_up_to: int | None, add_description: str | None, 
@@ -464,3 +471,4 @@ class DataBase:
         except Exception as e:
             print('Возникла ошибка (update_request_with_id): ', e)
             return ('При выполнении запроса возникла ошибка', False)
+        
