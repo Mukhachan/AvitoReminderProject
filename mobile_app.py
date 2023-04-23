@@ -3,33 +3,21 @@ from kivy. app import App
 from kivy.lang import Builder
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
+from kivy.uix.widget import Widget
 from kivy.graphics import Ellipse
 from kivy.metrics import dp
-from config import host, user, password, db_name, bot_api_token, db_connect
-
+from config import host, user, password, db_name, bot_api_token, db_connect_old
 import asyncio
 
 Window.size = (405, 720)
 Window.clearcolor = (255/255, 255/255, 255/255)
 
-class LoginScreen(BoxLayout):
-    pass
 
-'''class RoundedButton(Button):
-    def __init__(self, **kwargs):
-        super(RoundedButton, self).__init__(**kwargs)
-        
-        # Создание объекта Ellipse для фона кнопки
-        with self.canvas.before:
-            self.background = Ellipse(pos=self.pos, size=self.size)
-        
-        # Обновление объекта Ellipse при изменении размеров кнопки
-        self.bind(pos=self._update_background, size=self._update_background)
-    
-    def _update_background(self, instance, value):
-        # Обновление объекта Ellipse
-        self.background.pos = instance.pos
-        self.background.size = instance.size'''
+class LoginScreen(BoxLayout):
+    def log_in(self, login, password):
+        print("Логин: "+ login)
+        print("Пароль: "+ password)
+        conn.get_user(login, password)
 
 class MainApp(App):
     def build(self):
@@ -38,12 +26,10 @@ class MainApp(App):
         login_screen = LoginScreen()
         #return Builder.load_file("main.kv")
         return login_screen
-    
-    def press_button(self, instance):
-        print('кнопка "Войти" нажата')
-        print(instance)
+
 
 if __name__=='__main__':
+    conn = db_connect_old()
     loop = asyncio.get_event_loop()
     app = MainApp(title="Парсер Авито") 
     loop = asyncio.create_task(app.run())
