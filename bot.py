@@ -1,5 +1,4 @@
-from config import bot_api_token, parser_timer, garbage_collector_time, mes_len, db_connect_pool, db_connect_old
-from datetime import *
+from config import bot_api_token, parser_timer, garbage_collector_time, mes_len, dev_text, db_connect_pool, db_connect_old
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.utils import *
 import asyncio
@@ -7,7 +6,7 @@ import time
 from backend import AvitoRequest
 from DataBase import DataBase
 from os import system
-# Подключаемся к бд и получаем экземпляр класса DataBase в лице "conn" #
+
 bot = Bot(token=bot_api_token)
 dp = Dispatcher(bot)
 
@@ -55,7 +54,7 @@ async def start(message: types.Message):
 
 @dp.message_handler(commands=['dev'])
 async def dev_message(message: types.Message):
-    await message.answer(text='Над проектом работали:\n- Альмухаметов Артём (@Mukhachan_dev)\n- Ардашев Александр (@likeaatea)')
+    await message.answer(text = dev_text)
 
 @dp.message_handler()
 async def echo_message(message: types.Message):
@@ -63,8 +62,7 @@ async def echo_message(message: types.Message):
     print(str(message.chat.id), ':', message.text)
 
     if message.text == 'developers':
-        text = 'Над проектом работали:\n- Альмухаметов Артём (@Mukhachan_dev)\n- Ардашев Александр (@likeaatea)'
-        await bot.send_message(message.from_user.id, text)
+        await bot.send_message(message.from_user.id, dev_text)
 
     else:
         await bot.send_message(message.from_user.id, message.text)

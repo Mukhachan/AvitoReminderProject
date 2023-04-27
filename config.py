@@ -20,6 +20,8 @@ proxies = [
             "http://uZ3znH:w1aVx0@193.124.177.100:9751"
           ]
 
+dev_text = 'Над проектом работали:\n- Альмухаметов Артём (@Mukhachan_dev)\n- Ардашев Александр (@likeaatea)'
+
 import pymysql
 from pymysql.cursors import DictCursor
 from mysql.connector import Error, pooling
