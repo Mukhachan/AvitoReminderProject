@@ -28,7 +28,6 @@ if ans == '1':
                 print("Ну всё тогда")
                 input('enter')
                 break
-
             else:
                 print('Чё ты ввёл..')
 

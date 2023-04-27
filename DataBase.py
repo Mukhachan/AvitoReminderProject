@@ -1,8 +1,7 @@
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 from random import choice
-from config import crypt_key
-from time import sleep
+from config import crypt_key, user_online, old_records
 import string
 import datetime
 import pymysql
@@ -55,13 +54,18 @@ class DataBase:
              # Создаём запись в таблице users #
             code = self.create_start_code()
             
-            sql_request = f'INSERT INTO `avitoreminder`.`users` (email, password, bot_key) VALUES ("{email}", "{password}", "{code}")'
+            sql = (
+            f'INSERT INTO `avitoreminder`.`users` (email, password, bot_key) VALUES ("{email}", "{password}", "{code}")'
+            )
              
-            self.__cur.execute(sql_request)
+            self.__cur.execute(sql)
             self.__connection.commit()
             print('Успешная регистрация')
              # Берём ID юзера #
-            self.__cur.execute(f'SELECT id from `avitoreminder`.`users` WHERE email = "{email}"')
+            sql = (
+                f'SELECT id from `avitoreminder`.`users` WHERE email = "{email}"'
+            )
+            self.__cur.execute(sql)
             
             id = str(self.__cur.fetchone()['id'])
 
@@ -123,13 +127,15 @@ class DataBase:
             
             title = title.replace('"', '')
             title = title.replace('”', '')
+            title = title.replace('`', '')
+
             sql = f'INSERT INTO `avitoreminder`.`parsing_data` VALUES (NULL, {user_id}, {request_id}, "{link}", "{title}", "{price}", "{state}", "{current_time}")'
             
             self.__cur.execute(sql)
             self.__connection.commit()
             print("[INFO]. Товар добавлен", title)
         except pymysql.err.InterfaceError:
-            pass  
+            pass
         
         except Exception as e:
             print('[INFO] Возникла ошибка при добавлении данных в таблицу parsing_data: ', e)
@@ -154,7 +160,7 @@ class DataBase:
             Эта функция удаляет записи которые были созданы и показаны более 7 дней назад
         """
         current_time = datetime.datetime.now()
-        delete_time = current_time - datetime.timedelta(days=7)          
+        delete_time = current_time - datetime.timedelta(days=old_records)          
         try: # Удаляем из БД#
             self.__cur.execute(f"DELETE FROM `avitoreminder`.`parsing_data` WHERE `state`='sent' AND `state_date`< '{delete_time}'")
             self.__connection.commit()
@@ -296,7 +302,7 @@ class DataBase:
         
         except FileNotFoundError:
             print('Нет файла сfg.cfg')
-            return False
+            return ('Файла cfg.cfg нет', False)
 
         sql = (
             f"SELECT `state` FROM `avitoreminder`.`user_state` WHERE (`user_id` = '{user_id}')"
@@ -304,9 +310,9 @@ class DataBase:
         self.__cur.execute(sql)
         res = self.__cur.fetchone()['state'] 
         if res == "True":
-            return True
+            return ('Пользователь авторизирован', True)
         elif res == "False":
-            return False   
+            return ('Пользователь не авторизирован', False)   
 
     def create_start_code(self) -> str: # Создание старт кода для бота #
 
@@ -391,6 +397,7 @@ class DataBase:
         )
         self.__cur.execute(sql)
         self.__connection.commit()
+
         return ('Всё поменяли', True)
     
     def get_request(self, id: int) -> dict:
@@ -405,6 +412,7 @@ class DataBase:
             self.__cur.execute(sql)
             res = self.__cur.fetchone()
             return res if res else 'Список пуст'
+        
         except Exception as e:
             print('[INFO]. Возникла ошибка в функции get_request:', e)
 
@@ -420,6 +428,7 @@ class DataBase:
             res = self.__cur.fetchall()
             print(len(res))
             return res if res else ('Список пуст')
+        
         except Exception as e:
             print('Возникла ошибка (get_request_by_userID)', e)
   
@@ -454,8 +463,9 @@ class DataBase:
             Либо изменяется значение либо, оно None, тогда оно остаётся прежним.
         """
         update_fields = []
+        args = ['title', 'price_from', 'price_up_to', 'city', 'add_description', 'delivery', 'exception']
         try:
-            for field in ['title', 'price_from', 'price_up_to', 'city', 'add_description', 'delivery', 'exception']:
+            for field in args:
                 if locals()[field] is not None:
                     update_fields.append(f"{field} = '{locals()[field]}'")
 
@@ -471,4 +481,30 @@ class DataBase:
         except Exception as e:
             print('Возникла ошибка (update_request_with_id): ', e)
             return ('При выполнении запроса возникла ошибка', False)
+
+    def check_user_last_online(self) -> tuple:
+        """
+            Эта функция перебирает всех пользователей в бд и проверяет когда они были последний раз онлайн.
+            Если больше 14 дней назад, то мы меняем состояние авторизации на False. 
+            Функция должна запускать не чаще чем раз в сутки.
+        """
+        current_time = datetime.datetime.now()
+        delete_time = current_time - datetime.timedelta(days=user_online)          
+        try:
+            sql = (
+            f'UPDATE `avitoreminder`.`user_state` SET `state`= "False" WHERE `last_online`< "{delete_time}"'
+            )
+            self.__cur.execute(sql)
+            self.__connection.commit()
+
+        except Exception as e:
+            print('Возникла ошибка (check_user_last_online): ', e)
+            return ('Возникла ошибка (check_user_last_online)', False)
         
+        return (self.__cur.rowcount, True)
+    
+    def __del__(self):
+        """
+            Это диструктор, он чистит память когда удаляется последний экземпляр класса 
+        """
+        print('Удаляю последний экземпляр DataBase')

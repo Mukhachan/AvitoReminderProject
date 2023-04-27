@@ -63,43 +63,43 @@ id: int, title: str | None, price_from: int | None,
     price_up_to: int | None, city: str | None, add_description: str | None,
                                 delivery: int | None, exception: str | None
 """
-def update_record(id: int, title: str | None, price_from: int | None,
-                                price_up_to: int | None, city: str | None, add_description: str | None,
-                                delivery: int | None, exception: str | None):
-    update_fields = []
-    if title is not None:
-        update_fields.append("title = '{}'".format(title))
-    if price_from is not None:
-        update_fields.append("price_from = '{}'".format(price_from))
-    if price_up_to is not None:
-        update_fields.append("price_up_to = '{}'".format(price_up_to))
-    if city is not None:
-        update_fields.append("city = '{}'".format(city))
-    if add_description is not None:
-        update_fields.append("add_description = '{}'".format(add_description))
-    if delivery is not None:
-        update_fields.append("delivery = '{}'".format(delivery))
-    if exception is not None:
-        update_fields.append("exception = '{}'".format(exception))
 
-    if not update_fields:
-        # ничего изменять не нужно
-        return
+"""
+    conn = db_connect_old()
+    if requests == 'Список пуст':
+        return ('Список пуст', False)
+    print('Количество сообщений должно отправится: ', len(requests))
 
-    update_query = "UPDATE `avitoreminder`.`requests` SET {} WHERE id = {}".format(
-        ", ".join(update_fields), id)
+    for i, elem in enumerate(requests): # Перебираем все словари(записи) и фильтруем #  
+        
+        if elem['state'] == 'sent':
+            continue
 
-    # выполнить SQL-запрос в базе данных
-    # connection.execute(update_query)
-def update_record(id: int, title = None, price_from = None, price_up_to = None, 
-                  city = None, add_description = None, delivery = None, exception = None):
-    update_fields = []
+        chat_id = conn.get_bot_key(elem['user_id'])[1] # Получаем id чата в который надо отправить запись #
 
-    for field in ['title', 'price_from', 'price_up_to', 'city', 'add_description', 'delivery', 'exception']:
-        if locals()[field] is not None:
-            update_fields.append(f"{field} = '{locals()[field]}'")
+        req = conn.get_request(elem['request_id']) # Получаем список с запросом для проверки данных через фильтр #
 
-    if not update_fields:
-        return
+        price_from = 0 if req['price_from'] == None else req['price_from'] # Берём цену от #
+        price_up_to = 999999999999999  if req['price_up_to'] == None else req['price_up_to'] # Берём верхнюю цену #
+        
+        price = elem['price']
 
-    update_query = f"UPDATE `avitoreminder`.`requests` SET {', '.join(update_fields)} WHERE id = {id}"
+        if chat_id == None:
+            print('Такого пользователя нет или ещё что-то.\nЕдем дальше')
+            continue
+
+        elif price_from <= price <= price_up_to: # Проверяем. Подходит ли товар по нужной цене #
+            print('ПРОБУЮ ОТПРАВИТЬ: ', i)
+            text = (
+            f'\nПоявились новые товары среди ваших отслеживаемых! \n{elem["title"]}\n{elem["price"]} руб\n\n{elem["link"]}'
+            )
+            try:
+                await bot.send_message(chat_id=chat_id, text=text, parse_mode="html") # отправляем сообщение юзеру #
+            except:
+                asyncio.sleep(5)
+
+            conn.update_parsing_state(id = elem['id'], state='sent') # Обновляем состояние записи в parsing_data #
+        else:
+            print('Товар', i, 'НЕ подходит по цене\n')
+    del conn
+"""

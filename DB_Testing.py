@@ -26,7 +26,8 @@ while True:
           "(17). get_request_by_userID(self, user_id: int) -> list\n",
           "(18). update_request_with_id(self, id: int, title: str | None, price_from: int | None,\n",
           "         price_up_to: int | None, city: str | None, add_description: str | None,\n",
-          "         delivery: int | None, exception: str | None) -> tuple\n"
+          "         delivery: int | None, exception: str | None) -> tuple\n",
+          "(19). check_user_last_online(self) -> bool\n"
           )
     x = input('Цыферка: ')
 
@@ -111,5 +112,7 @@ while True:
                                           price_up_to=price_up_to, city=city, add_description=add_description,
                                           delivery=delivery,exception=exception
                                           ))
-        
+    elif x == '19':
+        print(conn.check_user_last_online())    
+
     del conn
