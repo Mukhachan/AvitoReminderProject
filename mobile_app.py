@@ -6,7 +6,7 @@ from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.widget import Widget
 from kivy.uix.button import Button
 from kivy.uix.screenmanager import ScreenManager, Screen
-from config import host, user, password, db_name, bot_api_token, db_connect_old
+from config import db_connect_old
 import asyncio
 
 Window.size = (405, 720)
@@ -25,6 +25,7 @@ class LoginScreen(Screen):
         if auth[1] == False:
             self.manager.current = 'RegistrationScreen'
         elif auth[1] == True:
+            conn.set_user_state(auth[2])
             self.manager.current = ''
         
 

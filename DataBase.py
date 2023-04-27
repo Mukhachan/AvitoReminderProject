@@ -283,7 +283,7 @@ class DataBase:
         self.__connection.commit()
         print('Данные о состоянии успешно обновлены')
 
-    def get_user_state(self) -> bool: # Чтение состояния авторизации #
+    def get_user_state(self) -> tuple: # Чтение состояния авторизации #
         """
             Получаем состояние авторизации пользователя
         """
