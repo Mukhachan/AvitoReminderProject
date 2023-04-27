@@ -14,25 +14,31 @@ Window.clearcolor = (255/255, 255/255, 255/255)
 
 
 class LoginScreen(Screen):
+    def __init__(self):
+        super().__init__()
+        self.name = 'LoginScreen'
+        self.manager.current = 'LoginScreen'
     def log_in(self, login, password):
         print("Логин: "+ login)
         print("Пароль: "+ password)
         conn.get_user(login, password)
+        return RegistrationScreen().to_reg_screen()
 
 class RegistrationScreen(Screen):
-    pass
+    def __init__(self):
+        super().__init__()
+        self.name = 'RegistrationScreen'
+    def to_reg_screen(self):
+        self.manager.current = "RegistrationScreen"
 
 class MainApp(App):
     def build(self):
         self.title = "Парсер Авито"
         self.icon = "Static\Лого.png"
-        #login_screen = LoginScreen()
-        #registration_screen = RegistrationScreen()
-        sm=ScreenManager()
-        sm.add_widget(LoginScreen(name='loginscreen'))
-        sm.add_widget(RegistrationScreen(name='registrationscreen'))
+        sm = ScreenManager()
+        sm.add_widget(LoginScreen())
+        sm.add_widget(RegistrationScreen())
         return sm
-        #return RegistrationScreen
 
 if __name__=='__main__':
     conn = db_connect_old()
