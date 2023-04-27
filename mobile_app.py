@@ -17,31 +17,40 @@ class LoginScreen(Screen):
     def __init__(self):
         super().__init__()
         self.name = 'LoginScreen'
-        self.manager.current = 'LoginScreen'
+
     def log_in(self, login, password):
         print("Логин: "+ login)
         print("Пароль: "+ password)
-        conn.get_user(login, password)
-        return RegistrationScreen().to_reg_screen()
+        auth = conn.get_user(login, password)
+        if auth[1] == False:
+            self.manager.current = 'RegistrationScreen'
+        elif auth[1] == True:
+            self.manager.current = ''
+        
 
 class RegistrationScreen(Screen):
     def __init__(self):
         super().__init__()
         self.name = 'RegistrationScreen'
-    def to_reg_screen(self):
-        self.manager.current = "RegistrationScreen"
+    #def to_reg_screen(self):
+        #self.manager.current = "RegistrationScreen"
 
 class MainApp(App):
-    def build(self):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.title = "Парсер Авито"
         self.icon = "Static\Лого.png"
+
+    def build(self):
+
         sm = ScreenManager()
         sm.add_widget(LoginScreen())
         sm.add_widget(RegistrationScreen())
+        
         return sm
 
 if __name__=='__main__':
     conn = db_connect_old()
-    loop = asyncio.get_event_loop()
-    app = MainApp(title="Парсер Авито") 
-    loop = asyncio.create_task(app.run())
+    #loop = asyncio.get_event_loop()
+    app = MainApp().run()
+    #loop = asyncio.create_task(app.run())
