@@ -1,4 +1,5 @@
 <LoginScreen>:
+
     BoxLayout:
         orientation: "vertical"
         Label:
@@ -32,6 +33,7 @@
             font_size: "25sp"
         TextInput:
             id: password
+            password: True
             size_hint: None, None
             size: 340, 50
             pos_hint: {"center_y": .5, "center_x": .5}
@@ -58,5 +60,10 @@
             font_size: "15sp"
 
 
-<registrationScreen>:
-    
+<RegistrationScreen>:
+    FloatLayout:
+        Label:
+            text: "Регистрация"
+            size_hint: 0.2, 0.2
+            pos_hint: {"center_y": .6, "center_x": .5}
+            font_size: "35sp"
