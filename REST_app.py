@@ -23,13 +23,10 @@ def call_function():
         try:
             conn = db_connect_old()
             result = getattr(conn, function_name)(**kwargs)
-            
             # возвращаем результат в виде JSON
             return jsonify({'result': result})            
-        
         except Exception:
             return jsonify({'error': 'Invalid function name'})
-
         finally:
             del conn
     else:

@@ -28,5 +28,34 @@ ALTER TABLE `avitoreminder`.`parsing_data` ADD COLUMN `state_date` text NULL AFT
 
 Пример запроса с аргументами 
     http://localhost:5000/call_function?function_name=get_user_info&user_id=1&full_info=True
-    
-    - Получить все запросы -  http://localhost:5000/call_function?function_name=get_requests
+    http://45.9.41.88:5000
+
+    - Получить все запросы -  http://45.9.41.88:5000/call_function?function_name=get_requests
+
+import { StatusBar } from 'expo-status-bar';
+import React from 'react';
+import { StyleSheet, Text, View, Button } from 'react-native';
+
+export default function App() {
+  fetch('http://45.9.41.88:5000/call_function?function_name=get_requests')
+    .then((response) => response.json())
+    .then((data) => console.log('Вот что вернул сервер', data));
+
+  return (
+    <View style={styles.container}>
+      <Text>Какой-то непонятный текст</Text>
+      <StatusBar style="auto" />
+      <Button title='Название кнопки' onPress={() => console.log('Кнопка нажата') } />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    margin: 10
+  }
+});
