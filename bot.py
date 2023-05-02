@@ -63,7 +63,6 @@ async def echo_message(message: types.Message):
 
     if message.text == 'developers':
         await bot.send_message(message.from_user.id, dev_text)
-
     else:
         await bot.send_message(message.from_user.id, message.text)
 

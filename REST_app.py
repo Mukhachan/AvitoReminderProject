@@ -7,7 +7,7 @@ app.config['CORS_HEADERS'] = 'Content-Type'
 cors = CORS(app, resources={r"/foo": {"origins": "*"}})
 
 
-@app.route('/call_function', methods=['GET', 'POST', 'OPTIONS'])
+@app.route('/call_function', methods=['GET'])
 @cross_origin(origin='*',headers=['Content-Type','Authorization'])
 def call_function():
     # получаем имя функции и ее аргументы из параметров запроса
