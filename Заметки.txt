@@ -24,3 +24,9 @@ ASgCAgECAUXGmgwbeyJmcm9tIjoxMzAwMCwidG8iOjYwMDAwMDB9 - 13000/6000000
 }
 
 ALTER TABLE `avitoreminder`.`parsing_data` ADD COLUMN `state_date` text NULL AFTER `state`;
+
+
+Пример запроса с аргументами 
+    http://localhost:5000/call_function?function_name=get_user_info&user_id=1&full_info=True
+    
+    - Получить все запросы -  http://localhost:5000/call_function?function_name=get_requests
