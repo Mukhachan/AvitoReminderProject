@@ -5,15 +5,21 @@ export default function App() {
   let txt = 'Добро\nпожаловать!';
   let login;
   let password;
-  let value = ''; 
+
   // let data = fetch('http://45.9.41.88:5000/call_function?function_name=parsing_data_read')
   //   .then((response) => response.json())
   //   .then((resp) => console.log(resp));
   const auth_btn_press = (login, password) =>{
     console.log('Нажата кнопка: "Войти"')
-    console.log(login)
-    console.log(password)
-  }
+    console.log(login, password)
+    let data = fetch(
+      'http://127.0.0.1:5000/call_function?function_name=get_user&email=' + login + '&password=' + password
+      )
+      .then((response) => response.json())
+      .then((resp) => console.log(resp))
+      .catch((e) => console.log(e))
+      console.log(data)
+    }
 
 
   return (
@@ -21,12 +27,12 @@ export default function App() {
       <Text style={styles.GreetingTxt}>{txt}</Text>
 
       <Text style={styles.TXT}>Логин</Text>
-      <TextInput style={styles.input} placeholder='email' placeholderTextColor="#000" 
-        defaultValue={value} onChangeText={() => (login = this.value)}/>
+      <TextInput style={styles.input} placeholder='email' placeholderTextColor="#525252" 
+        onChangeText={(log) => (login = log)}/>
       
       <Text style={styles.TXT}>Пароль</Text>
-      <TextInput style={styles.input} placeholder='password' placeholderTextColor="#000" 
-        defaultValue={value} onChangeText={() => (password = this.value)}/>
+      <TextInput style={styles.input} placeholder='password' placeholderTextColor="#525252" 
+        onChangeText={(psw) => (password = psw)}/>
       
       <TouchableOpacity style={styles.AuthBtn} onPress={() => auth_btn_press(login, password)} >
         <Text style={styles.BTNtxt}>Войти</Text>
@@ -34,12 +40,12 @@ export default function App() {
       
       <TouchableOpacity style={{position: 'absolute', bottom: '5%', color:'#000'}}
         onPress={() => console.log('Нажата кнопка: "Забыли пароль?"')}>
-        <Text>Забыли пароль?</Text>
+        <Text style={{textDecorationLine: 'underline'}}>Забыли пароль?</Text>
       </TouchableOpacity>
       
       <TouchableOpacity style={{position: 'absolute', bottom: '1%', color:'#000'}}
         onPress={() => console.log('Нажата кнопка: "Зарегистрироваться?"')}>
-        <Text>Зарегистрироваться?</Text>
+        <Text style= {{textDecorationLine: 'underline'}}>Зарегистрироваться?</Text>
       </TouchableOpacity>
 
     </SafeAreaView>
@@ -107,7 +113,6 @@ const styles = StyleSheet.create({
     elevation: 16,
   },
   links: {
-    
     bottom: 0,
   }
 });
