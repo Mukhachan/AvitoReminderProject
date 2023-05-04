@@ -1,11 +1,15 @@
+import sys
+sys.path.append('..')
+
 from config import bot_api_token, parser_timer, garbage_collector_time, mes_len, dev_text, db_connect_pool, db_connect_old
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.utils import *
 import asyncio
 import time
-from backend import AvitoRequest
+from Parser_Bot.backend import AvitoRequest
 from DataBase import DataBase
 from os import system
+
 
 bot = Bot(token=bot_api_token)
 dp = Dispatcher(bot)
@@ -93,11 +97,12 @@ async def parsing_data_filter(requests: list) -> tuple:
             print('Такого пользователя нет или ещё что-то.\nЕдем дальше')
             continue
         elif price_from <= price <= price_up_to: # Это если товар подходит по нужной цене #
-            print('Товар', i, 'подходит, добавляю:', elem)
+            #print('Товар', i, 'подходит, добавляю:', elem)
             lst.append(elem)
             conn.update_parsing_state(id = elem['id'], state='sent') # Обновляем состояние записи в parsing_data #
         else:
-            print('Товар', i, 'НЕ подходит по цене\n')
+            #print('Товар', i, 'НЕ подходит по цене\n')
+            pass
 
     # Сортируем список по ключу "user_id"
     lst.sort(key=lambda x: x.get('user_id')) 

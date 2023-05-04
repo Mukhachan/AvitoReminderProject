@@ -1,4 +1,7 @@
-from backend import AvitoRequest
+import sys
+sys.path.append('..')
+
+from Parser_Bot.backend import AvitoRequest
 from DataBase import DataBase
 from os import system
 

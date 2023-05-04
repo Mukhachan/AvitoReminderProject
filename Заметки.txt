@@ -6,8 +6,6 @@ b'mAJ_0ZIV4Y8FFVx5b-bfBpTNWsqv1hsxt-H5gHvXEYM='
 
 dg43gshe
 
-
-
 ASgCAgECAUXGmgwWeyJmcm9tIjo0OTAsInRvIjoxMzAwfQ - 490/1300
 ASgCAgECAUXGmgwYeyJmcm9tIjoxMzAwLCJ0byI6NjAwMDB9 - 1300/60000
 ASgCAgECAUXGmgwYeyJmcm9tIjoxMzAwLCJ0byI6NjAwMDB9 - 1300/60000 (Через несколько минут ничего не поменялось)
@@ -24,7 +22,6 @@ ASgCAgECAUXGmgwbeyJmcm9tIjoxMzAwMCwidG8iOjYwMDAwMDB9 - 13000/6000000
 }
 
 ALTER TABLE `avitoreminder`.`parsing_data` ADD COLUMN `state_date` text NULL AFTER `state`;
-
 
 Пример запроса с аргументами 
     http://localhost:5000/call_function?function_name=get_user_info&user_id=1&full_info=True

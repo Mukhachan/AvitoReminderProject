@@ -185,7 +185,7 @@ class DataBase:
         for i in parsing_data:
             x = self.get_request(i['request_id'])
             if x == 'Список пуст':
-                print(i['request_id'], "Удаляю")
+                #print(i['request_id'], "Удаляю")
                 try:
                     self.__cur.execute(
                         f'DELETE FROM `avitoreminder`.`parsing_data` WHERE `request_id` = {i["request_id"]}'
@@ -196,7 +196,8 @@ class DataBase:
                     print('Появилась непонятная ошибка', e)
                     return False
             if x != 'Список пуст':
-                print(i['request_id'], 'удалять не будем')
+                #print(i['request_id'], 'удалять не будем')
+                pass
         pd_len_after = len(parsing_data) - len(self.parsing_data_read())
 
         print('Из parsing_data удалено ненужных товаров:', pd_len_after, '\n')

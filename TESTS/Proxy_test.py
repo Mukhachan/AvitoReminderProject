@@ -1,3 +1,6 @@
+import sys
+sys.path.append('..')
+
 import requests
 from random import randint
 from config import proxies

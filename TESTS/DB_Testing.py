@@ -1,3 +1,6 @@
+import sys
+sys.path.append('..')
+
 from config import db_connect_old
 # Подключаемся к бд и получаем экземпляр класса DataBase в лице "conn" #
 
