@@ -1,6 +1,7 @@
-import { View, StyleSheet, Text, SafeAreaView, TouchableOpacity, TextInput } from 'react-native';
+import { StyleSheet, Text, SafeAreaView, TouchableOpacity, TextInput } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { setToken } from '../App.js';
+import { AppNavigator } from '../AppNavigator.js'
 
 export function AuthFunction() {
   let txt = 'Добро\nпожаловать!';
@@ -38,7 +39,6 @@ export function AuthFunction() {
 
     if (login == undefined && password == undefined) {
       alert('Введите данные')
-      
     }
     else {
       let url = 'http://45.9.41.88:5000/call_function?function_name=get_user&email=' + login + '&password=' + password
@@ -49,9 +49,13 @@ export function AuthFunction() {
       .then(((resp) => {
         console.log(resp)
         if (resp.result[1]) {
-          // alert('Успешная авторизация!')
+          alert('Успешная авторизация!')
+          
           // И тут мы типо сохраняем токен на мобиле и переходим к другому окну
           // addToken(resp.result[2])
+          signedIn = true
+          
+          //navigation.navigate('Tab')
 
         } else {
           alert('Ты кто такой???')
@@ -85,7 +89,7 @@ export function AuthFunction() {
       </TouchableOpacity>
       
       <TouchableOpacity style={{position: 'absolute', bottom: '1%', color:'#000'}}
-        onPress={() => {HandlNavigateToScreen('Регистрация'); console.log('Нажата кнопка: "Зарегистрироваться?"')}}>
+        onPress={() => {HandlNavigateToScreen('Регистрация'); console.log('Нажата кнопка: "Зарегистрироваться"')}}>
         <Text style= {{textDecorationLine: 'underline'}}>Зарегистрироваться</Text>
       </TouchableOpacity>
       

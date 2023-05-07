@@ -69,12 +69,14 @@ class DataBase:
             
             id = str(self.__cur.fetchone()['id'])
 
-             # Сохраняем зашифрованый ID в файл #
-            with open('cfg.cfg', 'wb') as file:
-                file.write(self.__f.encrypt(id.encode()))
+            #  # Сохраняем зашифрованый ID в файл #
+            # with open('cfg.cfg', 'wb') as file:
+            #     file.write(self.__f.encrypt(id.encode()))
+            
             self.set_user_state(id)
             print("Пользователь добавлен")
-            return True
+            return self.__f.encrypt(id.encode())
+        
         except pymysql.err as Error:
             print('[INFO] Возникла ошибка')
             print(Error)
