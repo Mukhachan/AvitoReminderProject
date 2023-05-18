@@ -1,7 +1,7 @@
 import { StyleSheet, Text, SafeAreaView, TouchableOpacity, TextInput } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
-import { setToken } from '../App.js';
-import { AppNavigator } from '../AppNavigator.js'
+import { save } from '../StorageComponent.js';
+import { host } from '../host.js'
 
 export function AuthFunction() {
   let txt = 'Добро\nпожаловать!';
@@ -41,22 +41,21 @@ export function AuthFunction() {
       alert('Введите данные')
     }
     else {
-      let url = 'http://45.9.41.88:5000/call_function?function_name=get_user&email=' + login + '&password=' + password
-
+      let url = host + 'call_function?function_name=get_user&email=' + login + '&password=' + password
+      
+      // Запрос на авторизацию в БД
       fetch(url)
       .then((response) => (response.json()))
-      // .then( response => console.log(response) )
       .then(((resp) => {
         console.log(resp)
         if (resp.result[1]) {
           alert('Успешная авторизация!')
           
           // И тут мы типо сохраняем токен на мобиле и переходим к другому окну
-          // addToken(resp.result[2])
-          signedIn = true
+          save('id', resp.result[2])
           
           //navigation.navigate('Tab')
-
+          
         } else {
           alert('Ты кто такой???')
         }
@@ -76,7 +75,7 @@ export function AuthFunction() {
         onChangeText={(log) => (login = log)}/>
       
       <Text style={styles.TXT}>Пароль</Text>
-      <TextInput secureTextEntry='true' style={styles.input} placeholder='password' placeholderTextColor="#525252" 
+      <TextInput secureTextEntry={true} style={styles.input} placeholder='password' placeholderTextColor="#525252" 
         onChangeText={(psw) => (password = psw)}/>
       
       <TouchableOpacity style={styles.AuthBtn} onPress={() => auth_btn_press(login, password)} >
@@ -125,7 +124,7 @@ export function AuthFunction() {
     GreetingTxt: {
       zIndex: 1,
       fontSize: 32,
-      fontWeight: 650,
+      fontWeight: 600,
       textAlign: 'center',
       marginBottom: 28,
     },

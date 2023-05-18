@@ -1,11 +1,17 @@
 import React from "react";
 import { SafeAreaView, Text, StyleSheet, TextInput, TouchableOpacity } from "react-native";
+import { useNavigation } from '@react-navigation/native';
 
 export function RegScreen () {
     let txt = 'Регистрация';
     let login;
     let Fpassword;
     let Spassword;
+    
+    const navigation = useNavigation()
+    const HandlNavigateToScreen = (screen) => {
+      navigation.navigate(screen)
+    }
 
     const circles = [];
     const colours = ['#FF0000', '#8A0BED', '#13EA00']
@@ -34,7 +40,7 @@ export function RegScreen () {
             // Здесь мы обрабатываем случай в котором пароли разные
             alert('Вы ввели разные пароли')
          } else {
-            fetch('http://127.0.0.1:5000/call_function?function_name=create_user&email='+login+'&password='+Fpassword)
+            fetch(host+'call_function?function_name=create_user&email='+login+'&password='+Fpassword)
             .then((response) => (response.json()))
             .then((resp) => console.log(resp))
         }
@@ -49,16 +55,26 @@ export function RegScreen () {
             onChangeText={(log) => (login = log)}/>
 
             <Text style={styles.TXT}>Пароль</Text>
-            <TextInput secureTextEntry='true' style={styles.input} placeholder='password' placeholderTextColor="#525252" 
+            <TextInput secureTextEntry={true} style={styles.input} placeholder='password' placeholderTextColor="#525252" 
             onChangeText={(psw) => (Fpassword = psw)}/>
 
             <Text style={styles.TXT}>Пароль ещё раз</Text>
-            <TextInput secureTextEntry='true' style={styles.input} placeholder='password' placeholderTextColor="#525252" 
+            <TextInput secureTextEntry={true} style={styles.input} placeholder='password' placeholderTextColor="#525252" 
             onChangeText={(psw) => (Spassword = psw)}/>
 
             <TouchableOpacity style={styles.AuthBtn} onPress={() => reg_btn_press(login, Fpassword, Spassword)} >
-            <Text style={styles.BTNtxt}>Регистрация</Text>
+            <Text style={styles.BTNtxt}>Регистрация</Text>            
             </TouchableOpacity>
+
+            <TouchableOpacity style={{position: 'absolute', bottom: '5%', color:'#000'}}
+                onPress={() => console.log('Нажата кнопка: "Забыли пароль?"')}>
+              <Text style={{textDecorationLine: 'underline'}}>Забыли пароль?</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity style={{position: 'absolute', bottom: '1%', color:'#000'}}
+                onPress={() => {HandlNavigateToScreen('Авторизация'); console.log('Нажата кнопка: "Авторизироваться"')}}>
+              <Text style= {{textDecorationLine: 'underline'}}>Авторизироваться</Text>
+            </TouchableOpacity>            
     </SafeAreaView>
     )
 }
@@ -121,6 +137,7 @@ const styles = StyleSheet.create({
         zIndex: 1,
         color: '#fff',
         fontSize: 24,
+        textAlign: 'center'
       },
       AuthBtn: {
         zIndex: 1,

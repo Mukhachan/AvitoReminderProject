@@ -1,11 +1,10 @@
 import { NavigationContainer } from '@react-navigation/native';
-
-// Импорт навигатора
- import { AppNavigator } from './AppNavigator.js'
+// Импорт компонетноу
+import { AppNavigator } from './AppNavigator.js'
+// import { getValueFor } from './StorageComponent.js';
 
 
 export default function App() {
-
   return (
     <NavigationContainer>
       <AppNavigator/>

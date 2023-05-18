@@ -75,7 +75,7 @@ class DataBase:
             
             self.set_user_state(id)
             print("Пользователь добавлен")
-            return self.__f.encrypt(id.encode())
+            return self.__f.encrypt(id.encode()).encode()
         
         except pymysql.err as Error:
             print('[INFO] Возникла ошибка')
@@ -114,6 +114,7 @@ class DataBase:
                 return ("Успешная авторизация", True, id, True)
             elif bot_key[0] == 'start_code':
                 print('(get_user) тг НЕ привязан')
+                print(f'({id})')
                 return ("Успешная авторизация", True, id, bot_key)
         else:
             print("Неверный пароль")
