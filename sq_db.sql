@@ -38,4 +38,14 @@ CREATE TABLE IF NOT EXISTS `avitoreminder`.`user_state`(
     last_online text NOT NULL,
     last_auth text NOT NULL,
     PRIMARY KEY (id) 
+);
+
+CREATE TABLE IF NOT EXISTS `avitoreminder`.`rest_log`(
+    id int NOT NULL AUTO_INCREMENT,
+    date datetime NOT NULL,
+    url text NOT NULL,
+    ip text NOT NULL,
+    status_code integer NOT NULL,
+    headers JSON NULL,
+    PRIMARY KEY (id)
 )

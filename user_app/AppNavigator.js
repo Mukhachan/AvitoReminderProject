@@ -74,7 +74,7 @@ export const AppNavigator = (state) => {
 
     console.log('А тут', signedIn)
 
-
+    signedIn = true;
     // Если пользователь не авторизован
     if (signedIn != true ) {
         return (
