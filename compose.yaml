@@ -1,0 +1,13 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./data:/app/data
+    tmpfs:
+      - /tmp:size=64m,mode=1777

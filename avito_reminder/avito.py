@@ -1,0 +1,343 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import random
+import re
+from collections.abc import Iterable
+from urllib.parse import urlencode, urljoin, urlparse
+
+import aiohttp
+from bs4 import BeautifulSoup, Tag
+
+from .config import Settings
+from .models import AvitoItem
+
+logger = logging.getLogger(__name__)
+
+AVITO_BASE_URL = "https://www.avito.ru"
+
+
+class AvitoError(RuntimeError):
+    """Base error raised by the Avito client."""
+
+
+class AvitoNetworkError(AvitoError):
+    """Avito could not be reached."""
+
+
+class AvitoBlockedError(AvitoError):
+    """Avito requested a captcha or blocked the current IP."""
+
+
+class AvitoParseError(AvitoError):
+    """The response did not contain a supported search result format."""
+
+
+_CITY_ALIASES = {
+    "москва": "moskva",
+    "санкт-петербург": "sankt-peterburg",
+    "санкт петербург": "sankt-peterburg",
+    "спб": "sankt-peterburg",
+    "казань": "kazan",
+    "екатеринбург": "ekaterinburg",
+    "нижний новгород": "nizhniy_novgorod",
+    "новосибирск": "novosibirsk",
+    "ростов-на-дону": "rostov-na-donu",
+    "самара": "samara",
+    "омск": "omsk",
+    "уфа": "ufa",
+    "красноярск": "krasnoyarsk",
+    "пермь": "perm",
+    "воронеж": "voronezh",
+    "волгоград": "volgograd",
+    "краснодар": "krasnodar",
+    "тюмень": "tyumen",
+    "вся россия": "rossiya",
+    "россия": "rossiya",
+}
+
+_TRANSLIT = str.maketrans(
+    {
+        "а": "a",
+        "б": "b",
+        "в": "v",
+        "г": "g",
+        "д": "d",
+        "е": "e",
+        "ё": "e",
+        "ж": "zh",
+        "з": "z",
+        "и": "i",
+        "й": "y",
+        "к": "k",
+        "л": "l",
+        "м": "m",
+        "н": "n",
+        "о": "o",
+        "п": "p",
+        "р": "r",
+        "с": "s",
+        "т": "t",
+        "у": "u",
+        "ф": "f",
+        "х": "h",
+        "ц": "ts",
+        "ч": "ch",
+        "ш": "sh",
+        "щ": "sch",
+        "ъ": "",
+        "ы": "y",
+        "ь": "",
+        "э": "e",
+        "ю": "yu",
+        "я": "ya",
+    }
+)
+
+
+def city_slug(city: str) -> str:
+    normalized = " ".join(city.strip().lower().split())
+    if not normalized:
+        raise ValueError("Город не может быть пустым")
+    if normalized in _CITY_ALIASES:
+        return _CITY_ALIASES[normalized]
+    slug = normalized.translate(_TRANSLIT)
+    slug = re.sub(r"[^a-z0-9]+", "-", slug).strip("-")
+    if not slug:
+        raise ValueError("Не удалось преобразовать город в адрес Avito")
+    return slug
+
+
+def build_search_url(
+    query: str,
+    city: str,
+    price_min: int | None = None,
+    price_max: int | None = None,
+) -> str:
+    query = " ".join(query.split())
+    if not query:
+        raise ValueError("Поисковый запрос не может быть пустым")
+    if price_min is not None and price_min < 0:
+        raise ValueError("Минимальная цена не может быть отрицательной")
+    if price_max is not None and price_max < 0:
+        raise ValueError("Максимальная цена не может быть отрицательной")
+    if price_min is not None and price_max is not None and price_min > price_max:
+        raise ValueError("Минимальная цена не может быть больше максимальной")
+
+    params: dict[str, str | int] = {"q": query, "s": 104}
+    if price_min is not None:
+        params["pmin"] = price_min
+    if price_max is not None:
+        params["pmax"] = price_max
+    return f"{AVITO_BASE_URL}/{city_slug(city)}?{urlencode(params)}"
+
+
+def _price_from_text(value: str | None) -> int | None:
+    if not value:
+        return None
+    digits = re.sub(r"\D", "", value)
+    return int(digits) if digits else None
+
+
+def _item_id(url: str, fallback: str | None = None) -> str | None:
+    if fallback and fallback.strip():
+        return fallback.strip()
+    path = urlparse(url).path.rstrip("/")
+    match = re.search(r"_(\d{6,})$", path)
+    return match.group(1) if match else None
+
+
+def _text(node: Tag | None) -> str | None:
+    if node is None:
+        return None
+    value = " ".join(node.get_text(" ", strip=True).split())
+    return value or None
+
+
+def _first(card: Tag, selectors: Iterable[str]) -> Tag | None:
+    for selector in selectors:
+        node = card.select_one(selector)
+        if node is not None:
+            return node
+    return None
+
+
+def _parse_cards(soup: BeautifulSoup) -> list[AvitoItem]:
+    cards = soup.select('[data-marker="item"], [data-item-id][itemtype*="Product"]')
+    result: dict[str, AvitoItem] = {}
+    for card in cards:
+        if not isinstance(card, Tag):
+            continue
+        link = _first(
+            card,
+            (
+                'a[data-marker="item-title"]',
+                'a[itemprop="url"]',
+                'a[href*="_"]',
+            ),
+        )
+        href = link.get("href") if link else None
+        if not isinstance(href, str) or not href:
+            continue
+        url = urljoin(AVITO_BASE_URL, href)
+        item_id = _item_id(url, card.get("data-item-id"))
+        if not item_id:
+            continue
+
+        title_node = _first(card, ('[data-marker="item-title"]', '[itemprop="name"]', "h3"))
+        title = _text(title_node) or (link.get("title") if link else None)
+        if not isinstance(title, str) or not title.strip():
+            continue
+
+        price_meta = card.select_one('[itemprop="price"][content]')
+        if price_meta and isinstance(price_meta.get("content"), str):
+            price = _price_from_text(price_meta.get("content"))
+        else:
+            price = _price_from_text(
+                _text(_first(card, ('[data-marker="item-price"]', '[class*="price"]')))
+            )
+
+        location = _text(
+            _first(card, ('[data-marker="item-address"]', '[class*="geo"]', '[class*="address"]'))
+        )
+        image = _first(card, ('img[itemprop="image"]', "img"))
+        image_url = None
+        if image:
+            for attr in ("src", "data-src"):
+                raw = image.get(attr)
+                if isinstance(raw, str) and raw.startswith(("http://", "https://")):
+                    image_url = raw
+                    break
+
+        result[item_id] = AvitoItem(
+            id=item_id,
+            title=title.strip(),
+            price=price,
+            url=url,
+            location=location,
+            image_url=image_url,
+        )
+    return list(result.values())
+
+
+def _json_products(value: object) -> Iterable[dict[str, object]]:
+    if isinstance(value, dict):
+        kind = value.get("@type")
+        if kind == "Product" or ("name" in value and ("url" in value or "urlPath" in value)):
+            yield value
+        for child in value.values():
+            yield from _json_products(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _json_products(child)
+
+
+def _parse_json_ld(soup: BeautifulSoup) -> list[AvitoItem]:
+    result: dict[str, AvitoItem] = {}
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            payload = json.loads(script.get_text(strip=True))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for product in _json_products(payload):
+            raw_url = product.get("url") or product.get("urlPath")
+            title = product.get("name") or product.get("title")
+            if not isinstance(raw_url, str) or not isinstance(title, str):
+                continue
+            url = urljoin(AVITO_BASE_URL, raw_url)
+            item_id = _item_id(url, str(product.get("sku") or product.get("productID") or ""))
+            if not item_id:
+                continue
+            offers = product.get("offers") if isinstance(product.get("offers"), dict) else {}
+            price = _price_from_text(str(offers.get("price") or product.get("price") or ""))
+            image = product.get("image")
+            image_url = image if isinstance(image, str) else None
+            result[item_id] = AvitoItem(item_id, title.strip(), price, url, image_url=image_url)
+    return list(result.values())
+
+
+def parse_search_html(html: str) -> list[AvitoItem]:
+    lowered = html.lower()
+    block_markers = (
+        "доступ ограничен: проблема с ip",
+        "продолжить для решения капчи",
+        'data-marker="captcha"',
+        "captcha challenge",
+        "too many requests",
+    )
+    if any(marker in lowered for marker in block_markers):
+        raise AvitoBlockedError("Avito ограничил доступ с текущего IP или запросил капчу")
+
+    soup = BeautifulSoup(html, "html.parser")
+    items = _parse_cards(soup) or _parse_json_ld(soup)
+    if items:
+        return items
+
+    page_text = " ".join(soup.get_text(" ", strip=True).lower().split())
+    empty_markers = ("ничего не найдено", "объявлений не найдено", "нет подходящих объявлений")
+    if any(marker in page_text for marker in empty_markers):
+        return []
+    raise AvitoParseError("Avito ответил в неизвестном формате: карточки объявлений не найдены")
+
+
+class AvitoClient:
+    def __init__(self, settings: Settings):
+        self._settings = settings
+        self._session: aiohttp.ClientSession | None = None
+
+    async def __aenter__(self) -> AvitoClient:
+        await self.start()
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.close()
+
+    async def start(self) -> None:
+        if self._session is None or self._session.closed:
+            timeout = aiohttp.ClientTimeout(total=self._settings.request_timeout_seconds)
+            self._session = aiohttp.ClientSession(timeout=timeout, raise_for_status=False)
+
+    async def close(self) -> None:
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+    async def search(self, url: str) -> list[AvitoItem]:
+        await self.start()
+        assert self._session is not None
+        headers = {
+            "User-Agent": self._settings.user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ru-RU,ru;q=0.9",
+            "Cache-Control": "no-cache",
+        }
+        if self._settings.avito_cookie:
+            headers["Cookie"] = self._settings.avito_cookie
+
+        last_error: Exception | None = None
+        for attempt in range(1, self._settings.request_retries + 1):
+            try:
+                async with self._session.get(
+                    url,
+                    headers=headers,
+                    proxy=self._settings.http_proxy,
+                    allow_redirects=True,
+                ) as response:
+                    body = await response.text(errors="replace")
+                    if response.status in {401, 403, 429}:
+                        raise AvitoBlockedError(f"Avito вернул HTTP {response.status}")
+                    if response.status >= 500:
+                        raise AvitoNetworkError(f"Avito вернул HTTP {response.status}")
+                    if response.status != 200:
+                        raise AvitoNetworkError(f"Неожиданный HTTP-статус Avito: {response.status}")
+                    return parse_search_html(body)[: self._settings.max_results]
+            except AvitoBlockedError:
+                raise
+            except (TimeoutError, aiohttp.ClientError, AvitoNetworkError) as exc:
+                last_error = exc
+                if attempt < self._settings.request_retries:
+                    delay = min(8.0, 2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                    logger.warning("Ошибка запроса Avito, повтор через %.1f с: %s", delay, exc)
+                    await asyncio.sleep(delay)
+        raise AvitoNetworkError(f"Avito недоступен после повторов: {last_error}")

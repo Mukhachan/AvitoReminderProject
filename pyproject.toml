@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "avito-reminder"
+version = "2.0.0"
+description = "Telegram bot that monitors Avito searches"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiogram[proxy]>=3.25,<4",
+    "aiohttp>=3.11,<4",
+    "beautifulsoup4>=4.13,<5",
+    "python-dotenv>=1.1,<2",
+]
+
+[project.scripts]
+avito-reminder = "avito_reminder.app:main"
+avito-reminder-doctor = "avito_reminder.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["avito_reminder*"]
+
+[tool.pytest.ini_options]
+testpaths = ["TESTS"]
+python_files = ["test_*.py"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
