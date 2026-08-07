@@ -1,3 +1,4 @@
+import asyncio
 import json
 from urllib.parse import parse_qs, urlparse
 
@@ -5,11 +6,31 @@ import pytest
 
 from avito_reminder.avito import (
     AvitoBlockedError,
+    AvitoClient,
+    AvitoError,
+    AvitoNetworkError,
     AvitoParseError,
     build_search_url,
     city_slug,
     parse_search_html,
 )
+
+from .helpers import settings
+
+
+class RouteStubClient(AvitoClient):
+    def __init__(self, client_settings, proxy_error: AvitoError | None = None):
+        super().__init__(client_settings)
+        self.calls: list[bool] = []
+        self.proxy_error = proxy_error
+
+    async def _search_route(self, url, headers, *, use_proxy):
+        self.calls.append(use_proxy)
+        if not use_proxy:
+            raise AvitoBlockedError("Avito вернул HTTP 429")
+        if self.proxy_error:
+            raise self.proxy_error
+        return []
 
 
 def test_build_search_url_encodes_parameters() -> None:
@@ -84,3 +105,32 @@ def test_parse_accepts_confirmed_empty_result() -> None:
 def test_parse_rejects_unknown_layout() -> None:
     with pytest.raises(AvitoParseError):
         parse_search_html("<html><title>Avito</title><body>Неизвестная разметка</body></html>")
+
+
+def test_avito_falls_back_from_direct_to_socks_proxy(tmp_path) -> None:
+    client = RouteStubClient(
+        settings(
+            tmp_path / "test.db",
+            http_proxy="socks5://127.0.0.1:20808",
+            avito_proxy_mode="fallback",
+        )
+    )
+
+    assert asyncio.run(client.search("https://www.avito.ru/moskva")) == []
+    assert client.calls == [False, True]
+    assert client.last_route == "proxy"
+
+
+def test_avito_fallback_preserves_blocked_error(tmp_path) -> None:
+    client = RouteStubClient(
+        settings(
+            tmp_path / "test.db",
+            http_proxy="socks5://127.0.0.1:20808",
+            avito_proxy_mode="fallback",
+        ),
+        proxy_error=AvitoNetworkError("прокси недоступен"),
+    )
+
+    with pytest.raises(AvitoBlockedError, match="direct:.*proxy:"):
+        asyncio.run(client.search("https://www.avito.ru/moskva"))
+    assert client.calls == [False, True]

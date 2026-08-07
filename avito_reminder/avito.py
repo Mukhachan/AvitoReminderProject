@@ -6,9 +6,10 @@ import logging
 import random
 import re
 from collections.abc import Iterable
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse, urlsplit
 
 import aiohttp
+from aiohttp_socks import ProxyConnector
 from bs4 import BeautifulSoup, Tag
 
 from .config import Settings
@@ -285,7 +286,9 @@ def parse_search_html(html: str) -> list[AvitoItem]:
 class AvitoClient:
     def __init__(self, settings: Settings):
         self._settings = settings
-        self._session: aiohttp.ClientSession | None = None
+        self._direct_session: aiohttp.ClientSession | None = None
+        self._proxy_session: aiohttp.ClientSession | None = None
+        self.last_route: str | None = None
 
     async def __aenter__(self) -> AvitoClient:
         await self.start()
@@ -295,17 +298,52 @@ class AvitoClient:
         await self.close()
 
     async def start(self) -> None:
-        if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=self._settings.request_timeout_seconds)
-            self._session = aiohttp.ClientSession(timeout=timeout, raise_for_status=False)
+        await self._get_session(use_proxy=self._routes()[0])
 
     async def close(self) -> None:
-        if self._session and not self._session.closed:
-            await self._session.close()
+        for session in (self._direct_session, self._proxy_session):
+            if session and not session.closed:
+                await session.close()
+
+    def _routes(self) -> tuple[bool, ...]:
+        mode = self._settings.avito_proxy_mode
+        if mode == "proxy":
+            return (True,)
+        if mode == "fallback" and self._settings.http_proxy:
+            return (False, True)
+        return (False,)
+
+    async def _get_session(self, *, use_proxy: bool) -> tuple[aiohttp.ClientSession, str | None]:
+        timeout = aiohttp.ClientTimeout(total=self._settings.request_timeout_seconds)
+        if not use_proxy:
+            if self._direct_session is None or self._direct_session.closed:
+                self._direct_session = aiohttp.ClientSession(
+                    timeout=timeout, raise_for_status=False
+                )
+            return self._direct_session, None
+
+        proxy_url = self._settings.http_proxy
+        if not proxy_url:
+            raise AvitoNetworkError("Для прокси-маршрута не задан AVITO_PROXY")
+        scheme = urlsplit(proxy_url).scheme.lower()
+        if scheme in {"socks4", "socks5"}:
+            if self._proxy_session is None or self._proxy_session.closed:
+                connector = ProxyConnector.from_url(
+                    proxy_url,
+                    rdns=self._settings.avito_proxy_rdns,
+                )
+                self._proxy_session = aiohttp.ClientSession(
+                    connector=connector,
+                    timeout=timeout,
+                    raise_for_status=False,
+                )
+            return self._proxy_session, None
+
+        if self._proxy_session is None or self._proxy_session.closed:
+            self._proxy_session = aiohttp.ClientSession(timeout=timeout, raise_for_status=False)
+        return self._proxy_session, proxy_url
 
     async def search(self, url: str) -> list[AvitoItem]:
-        await self.start()
-        assert self._session is not None
         headers = {
             "User-Agent": self._settings.user_agent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -315,13 +353,46 @@ class AvitoClient:
         if self._settings.avito_cookie:
             headers["Cookie"] = self._settings.avito_cookie
 
+        route_errors: list[str] = []
+        was_blocked = False
+        routes = self._routes()
+        for index, use_proxy in enumerate(routes):
+            route_name = "proxy" if use_proxy else "direct"
+            self.last_route = route_name
+            try:
+                return await self._search_route(url, headers, use_proxy=use_proxy)
+            except AvitoError as exc:
+                route_errors.append(f"{route_name}: {exc}")
+                was_blocked = was_blocked or isinstance(exc, AvitoBlockedError)
+                if index + 1 < len(routes):
+                    logger.warning(
+                        "Маршрут Avito %s не сработал (%s); переключаюсь на прокси",
+                        route_name,
+                        exc,
+                    )
+                    continue
+                if len(route_errors) == 1:
+                    raise
+        combined_error = "; ".join(route_errors)
+        if was_blocked:
+            raise AvitoBlockedError(combined_error)
+        raise AvitoNetworkError(combined_error)
+
+    async def _search_route(
+        self,
+        url: str,
+        headers: dict[str, str],
+        *,
+        use_proxy: bool,
+    ) -> list[AvitoItem]:
+        session, request_proxy = await self._get_session(use_proxy=use_proxy)
         last_error: Exception | None = None
         for attempt in range(1, self._settings.request_retries + 1):
             try:
-                async with self._session.get(
+                async with session.get(
                     url,
                     headers=headers,
-                    proxy=self._settings.http_proxy,
+                    proxy=request_proxy,
                     allow_redirects=True,
                 ) as response:
                     body = await response.text(errors="replace")

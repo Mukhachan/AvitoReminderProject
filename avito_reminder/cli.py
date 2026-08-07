@@ -72,8 +72,11 @@ async def doctor(live: bool, telegram: bool, query: str, city: str) -> int:
         try:
             items = await client.search(url)
         except AvitoError as exc:
+            if client.last_route:
+                print("Avito last route:", client.last_route)
             print("Avito live check: FAIL -", exc)
             return max(status, 2)
+    print("Avito route:", client.last_route)
     print(f"Avito live check: OK, parsed {len(items)} items")
     for item in items[:3]:
         print(f"- {item.id}: {item.title} ({item.url})")

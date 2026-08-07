@@ -45,6 +45,14 @@ def _proxy_url(name: str) -> str | None:
     return raw
 
 
+def _choice(name: str, default: str, allowed: set[str]) -> str:
+    value = os.getenv(name, default).strip().lower()
+    if value not in allowed:
+        variants = ", ".join(sorted(allowed))
+        raise ValueError(f"{name}: ожидается одно из значений: {variants}")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     bot_token: str
@@ -60,6 +68,8 @@ class Settings:
     telegram_proxy_rdns: bool
     avito_cookie: str | None
     http_proxy: str | None
+    avito_proxy_mode: str
+    avito_proxy_rdns: bool
     user_agent: str
     log_level: str
 
@@ -74,6 +84,14 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
         )
 
     database_path = Path(os.getenv("DATABASE_PATH", "data/avito_reminder.db"))
+    avito_proxy = _proxy_url("AVITO_PROXY") or _proxy_url("AVITO_HTTP_PROXY")
+    avito_proxy_mode = _choice(
+        "AVITO_PROXY_MODE",
+        "fallback" if avito_proxy else "direct",
+        {"direct", "proxy", "fallback"},
+    )
+    if avito_proxy_mode == "proxy" and not avito_proxy:
+        raise ValueError("AVITO_PROXY_MODE=proxy требует заполненный AVITO_PROXY")
     return Settings(
         bot_token=token,
         database_path=database_path,
@@ -87,7 +105,9 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
         telegram_proxy=_proxy_url("TELEGRAM_PROXY"),
         telegram_proxy_rdns=_as_bool(os.getenv("TELEGRAM_PROXY_RDNS"), True),
         avito_cookie=os.getenv("AVITO_COOKIE") or None,
-        http_proxy=_proxy_url("AVITO_HTTP_PROXY"),
+        http_proxy=avito_proxy,
+        avito_proxy_mode=avito_proxy_mode,
+        avito_proxy_rdns=_as_bool(os.getenv("AVITO_PROXY_RDNS"), True),
         user_agent=os.getenv(
             "AVITO_USER_AGENT",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

@@ -18,6 +18,8 @@ def settings(database_path: Path, **overrides: object) -> Settings:
         "telegram_proxy_rdns": True,
         "avito_cookie": None,
         "http_proxy": None,
+        "avito_proxy_mode": "direct",
+        "avito_proxy_rdns": True,
         "user_agent": "test-agent",
         "log_level": "WARNING",
     }

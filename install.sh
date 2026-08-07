@@ -32,7 +32,7 @@ echo "Устанавливаю зависимости..."
 
 if [[ ! -f .env ]]; then
     cp .env.example .env
-    echo "Создан .env с прокси 127.0.0.1:10808. Добавьте TELEGRAM_BOT_TOKEN."
+    echo "Создан .env: Telegram через 127.0.0.1:20808, Avito напрямую. Добавьте токен."
 else
     echo "Существующий .env сохранён без изменений."
 fi
@@ -47,4 +47,3 @@ echo "1. Заполните токен: nano .env"
 echo "2. Проверьте VPN и API: bash check.sh"
 echo "3. Тестовый запуск: bash start.sh"
 echo "4. Автозапуск: bash service.sh install"
-

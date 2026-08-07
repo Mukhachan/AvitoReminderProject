@@ -31,7 +31,7 @@ Copy-Item .env.example .env
 TELEGRAM_BOT_TOKEN=123456:replace_me
 ```
 
-В `.env.example` включён Raspberry Pi-профиль `TELEGRAM_PROXY=socks5://127.0.0.1:10808`.
+В `.env.example` включён Raspberry Pi-профиль с SOCKS5 на `127.0.0.1:20808`.
 Если на Windows такого локального SOCKS5 нет, оставьте `TELEGRAM_PROXY=` пустым.
 
 Проверьте локальные компоненты и запустите бота:
@@ -53,12 +53,15 @@ TELEGRAM_BOT_TOKEN=123456:replace_me
 Telegram использует тот же локальный SOCKS5-порт, что и Profi.ru Parser:
 
 ```dotenv
-TELEGRAM_PROXY=socks5://127.0.0.1:10808
+TELEGRAM_PROXY=socks5://127.0.0.1:20808
 TELEGRAM_PROXY_RDNS=true
-AVITO_HTTP_PROXY=
+AVITO_PROXY_MODE=direct
+AVITO_PROXY=
+AVITO_PROXY_RDNS=true
 ```
 
-Таким образом, через VPN идёт только Telegram. Запросы Avito выполняются напрямую.
+Telegram всегда работает через Naive/SOCKS5. Avito работает через обычное подключение Raspberry Pi
+и не использует VPN.
 
 Установка:
 
@@ -74,8 +77,8 @@ bash start.sh
 До запуска проверки убедитесь, что VPN-сервис слушает порт:
 
 ```bash
-ss -lnt | grep 10808
-curl --proxy socks5h://127.0.0.1:10808 -I https://api.telegram.org
+ss -lnt | grep 20808
+curl --proxy socks5h://127.0.0.1:20808 -I https://api.telegram.org
 ```
 
 Для постоянной работы установите пользовательский systemd-сервис:
@@ -122,7 +125,10 @@ bash service.sh stop
 .venv/bin/python -m avito_reminder.cli --all
 ```
 
-Avito может ограничивать автоматические запросы по IP и показывать капчу. Бот не обходит капчу: он сохраняет ошибку, сообщает пользователю и повторяет проверку позже. При необходимости можно указать собственный разрешённый прокси через `AVITO_HTTP_PROXY`. Не используйте публичные или чужие прокси.
+Avito может ограничивать автоматические запросы по IP и показывать капчу. Бот не обходит капчу:
+он сохраняет ошибку, сообщает пользователю и повторяет проверку позже. По умолчанию используется
+режим `AVITO_PROXY_MODE=direct`. Режимы `proxy` и `fallback` сохранены для ручной диагностики,
+но при требовании «через Naive только Telegram» включать их не следует.
 
 ## Тесты и качество
 
@@ -143,7 +149,7 @@ docker compose logs -f bot
 ```
 
 База хранится в `data/avito_reminder.db` и монтируется в контейнер. Compose использует
-`network_mode: host`, чтобы адрес `127.0.0.1:10808` внутри контейнера указывал на VPN-сервис
+`network_mode: host`, чтобы адрес `127.0.0.1:20808` внутри контейнера указывал на VPN-сервис
 самого Raspberry Pi. На сервере предпочтителен systemd-вариант: он проще для диагностики.
 
 ## Безопасность
