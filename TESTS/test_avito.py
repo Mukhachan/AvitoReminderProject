@@ -33,6 +33,11 @@ class RouteStubClient(AvitoClient):
         return []
 
 
+class BrowserStubClient(AvitoClient):
+    async def _search_browser(self, url):
+        return []
+
+
 def test_build_search_url_encodes_parameters() -> None:
     url = build_search_url("iPhone 13 128 GB", "Москва", 30_000, 50_000)
     parsed = urlparse(url)
@@ -134,3 +139,15 @@ def test_avito_fallback_preserves_blocked_error(tmp_path) -> None:
     with pytest.raises(AvitoBlockedError, match="direct:.*proxy:"):
         asyncio.run(client.search("https://www.avito.ru/moskva"))
     assert client.calls == [False, True]
+
+
+def test_browser_transport_uses_direct_chromium_route(tmp_path) -> None:
+    client = BrowserStubClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+        )
+    )
+
+    assert asyncio.run(client.search("https://www.avito.ru/moskva")) == []
+    assert client.last_route == "chromium-direct"

@@ -20,6 +20,10 @@ def settings(database_path: Path, **overrides: object) -> Settings:
         "http_proxy": None,
         "avito_proxy_mode": "direct",
         "avito_proxy_rdns": True,
+        "avito_transport": "http",
+        "avito_browser_headless": True,
+        "avito_browser_profile_path": database_path.parent / "chromium-profile",
+        "avito_chromium_executable": None,
         "user_agent": "test-agent",
         "log_level": "WARNING",
     }

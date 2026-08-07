@@ -11,6 +11,7 @@ Telegram-бот сохраняет параметры поиска Avito, пер
 - SQLite без отдельного сервера баз данных;
 - защита от повторной отправки объявлений;
 - повторные запросы, тайм-ауты и backoff;
+- получение выдачи через постоянный профиль Chromium с прямым подключением;
 - явное обнаружение блокировки IP/капчи Avito;
 - диагностика и тесты;
 - запуск напрямую или через Docker Compose.
@@ -22,6 +23,7 @@ Telegram-бот сохраняет параметры поиска Avito, пер
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python -m playwright install chromium
 Copy-Item .env.example .env
 ```
 
@@ -55,13 +57,17 @@ Telegram использует тот же локальный SOCKS5-порт, ч
 ```dotenv
 TELEGRAM_PROXY=socks5://127.0.0.1:20808
 TELEGRAM_PROXY_RDNS=true
+AVITO_TRANSPORT=browser
+AVITO_BROWSER_HEADLESS=true
+AVITO_BROWSER_PROFILE_PATH=data/chromium-profile
 AVITO_PROXY_MODE=direct
 AVITO_PROXY=
 AVITO_PROXY_RDNS=true
 ```
 
-Telegram всегда работает через Naive/SOCKS5. Avito работает через обычное подключение Raspberry Pi
-и не использует VPN.
+Telegram всегда работает через Naive/SOCKS5. Avito открывается установленным Chromium через
+обычное подключение Raspberry Pi и не использует VPN. Профиль Chromium сохраняется между
+запусками в `data/chromium-profile`.
 
 Установка:
 
@@ -73,7 +79,8 @@ bash check.sh
 bash start.sh
 ```
 
-`bash check.sh` отдельно проверяет локальный SOCKS5, Telegram API и прямой запрос Avito.
+`bash check.sh` отдельно проверяет локальный SOCKS5, Telegram API, запуск Chromium и прямое
+открытие страницы Avito.
 До запуска проверки убедитесь, что VPN-сервис слушает порт:
 
 ```bash
@@ -125,10 +132,24 @@ bash service.sh stop
 .venv/bin/python -m avito_reminder.cli --all
 ```
 
-Avito может ограничивать автоматические запросы по IP и показывать капчу. Бот не обходит капчу:
-он сохраняет ошибку, сообщает пользователю и повторяет проверку позже. По умолчанию используется
-режим `AVITO_PROXY_MODE=direct`. Режимы `proxy` и `fallback` сохранены для ручной диагностики,
-но при требовании «через Naive только Telegram» включать их не следует.
+Если Avito показывает «Доступ ограничен: проблема с IP», остановите сервис и откройте тот же
+постоянный профиль в видимом Chromium:
+
+```bash
+bash service.sh stop
+.venv/bin/python -m avito_reminder.cli --setup-browser
+bash service.sh start
+```
+
+В браузере нажмите «Продолжить» и завершите предложенную Avito проверку. Режим не обходит
+капчу автоматически: проверку выполняет пользователь. Если после неё страница по-прежнему
+сообщает о проблеме с IP, смените публичный IP обычного подключения (например, перезапустите
+роутер при динамическом IP) либо дождитесь снятия ограничения.
+
+При ошибке Chromium сохраняет снимок страницы в `data/diagnostics`. Бот не обходит капчу:
+он сохраняет ошибку, сообщает пользователю и повторяет проверку позже. Для прежнего HTTP-клиента
+можно вручную задать `AVITO_TRANSPORT=http`, но основной серверный режим — `browser`.
+`AVITO_PROXY_MODE=direct` гарантирует, что HTTP-режим также не использует Naive.
 
 ## Тесты и качество
 
@@ -158,7 +179,7 @@ docker compose logs -f bot
 
 ## Структура
 
-- `avito_reminder/avito.py` — URL, HTTP-клиент и разбор выдачи;
+- `avito_reminder/avito.py` — Chromium/HTTP-клиент, URL и разбор выдачи;
 - `avito_reminder/database.py` — SQLite и дедупликация;
 - `avito_reminder/telegram.py` — команды и сценарий ввода;
 - `avito_reminder/service.py` — планировщик и уведомления;

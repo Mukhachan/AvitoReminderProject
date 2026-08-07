@@ -5,12 +5,27 @@ import json
 import logging
 import random
 import re
+import shutil
 from collections.abc import Iterable
+from contextlib import suppress
+from datetime import datetime
 from urllib.parse import urlencode, urljoin, urlparse, urlsplit
 
 import aiohttp
 from aiohttp_socks import ProxyConnector
 from bs4 import BeautifulSoup, Tag
+from playwright.async_api import (
+    BrowserContext,
+    Page,
+    Playwright,
+    async_playwright,
+)
+from playwright.async_api import (
+    Error as PlaywrightError,
+)
+from playwright.async_api import (
+    TimeoutError as PlaywrightTimeoutError,
+)
 
 from .config import Settings
 from .models import AvitoItem
@@ -18,6 +33,17 @@ from .models import AvitoItem
 logger = logging.getLogger(__name__)
 
 AVITO_BASE_URL = "https://www.avito.ru"
+
+
+def resolve_chromium_executable(settings: Settings) -> str | None:
+    """Return an explicit or system Chromium path, otherwise use Playwright's build."""
+    if settings.avito_chromium_executable:
+        return settings.avito_chromium_executable
+    for executable in ("chromium", "chromium-browser", "google-chrome"):
+        resolved = shutil.which(executable)
+        if resolved:
+            return resolved
+    return None
 
 
 class AvitoError(RuntimeError):
@@ -288,6 +314,9 @@ class AvitoClient:
         self._settings = settings
         self._direct_session: aiohttp.ClientSession | None = None
         self._proxy_session: aiohttp.ClientSession | None = None
+        self._playwright: Playwright | None = None
+        self._browser_context: BrowserContext | None = None
+        self._browser_lock = asyncio.Lock()
         self.last_route: str | None = None
 
     async def __aenter__(self) -> AvitoClient:
@@ -298,12 +327,54 @@ class AvitoClient:
         await self.close()
 
     async def start(self) -> None:
-        await self._get_session(use_proxy=self._routes()[0])
+        if self._settings.avito_transport == "browser":
+            await self._start_browser()
+        else:
+            await self._get_session(use_proxy=self._routes()[0])
 
     async def close(self) -> None:
         for session in (self._direct_session, self._proxy_session):
             if session and not session.closed:
                 await session.close()
+        if self._browser_context is not None:
+            await self._browser_context.close()
+            self._browser_context = None
+        if self._playwright is not None:
+            await self._playwright.stop()
+            self._playwright = None
+
+    async def _start_browser(self) -> None:
+        if self._browser_context is not None:
+            return
+
+        profile_path = self._settings.avito_browser_profile_path
+        profile_path.mkdir(parents=True, exist_ok=True)
+        executable_path = resolve_chromium_executable(self._settings)
+        self._playwright = await async_playwright().start()
+        try:
+            self._browser_context = await self._playwright.chromium.launch_persistent_context(
+                user_data_dir=str(profile_path),
+                executable_path=executable_path,
+                headless=self._settings.avito_browser_headless,
+                args=["--no-proxy-server", "--disable-dev-shm-usage"],
+                locale="ru-RU",
+                viewport={"width": 1365, "height": 900},
+                accept_downloads=False,
+            )
+        except PlaywrightError as exc:
+            await self._playwright.stop()
+            self._playwright = None
+            executable_hint = executable_path or "встроенный Chromium Playwright"
+            raise AvitoNetworkError(
+                f"Не удалось запустить Chromium ({executable_hint}): {exc}"
+            ) from exc
+
+        logger.info(
+            "Chromium для Avito запущен напрямую: executable=%s, headless=%s, profile=%s",
+            executable_path or "playwright",
+            self._settings.avito_browser_headless,
+            profile_path,
+        )
 
     def _routes(self) -> tuple[bool, ...]:
         mode = self._settings.avito_proxy_mode
@@ -344,6 +415,10 @@ class AvitoClient:
         return self._proxy_session, proxy_url
 
     async def search(self, url: str) -> list[AvitoItem]:
+        if self._settings.avito_transport == "browser":
+            self.last_route = "chromium-direct"
+            return await self._search_browser(url)
+
         headers = {
             "User-Agent": self._settings.user_agent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -377,6 +452,81 @@ class AvitoClient:
         if was_blocked:
             raise AvitoBlockedError(combined_error)
         raise AvitoNetworkError(combined_error)
+
+    async def _search_browser(self, url: str) -> list[AvitoItem]:
+        async with self._browser_lock:
+            await self._start_browser()
+            assert self._browser_context is not None
+            last_error: Exception | None = None
+
+            for attempt in range(1, self._settings.request_retries + 1):
+                page = await self._browser_context.new_page()
+                try:
+                    response = await page.goto(
+                        url,
+                        wait_until="domcontentloaded",
+                        timeout=self._settings.request_timeout_seconds * 1000,
+                    )
+                    status = response.status if response is not None else None
+                    if status in {401, 403, 429}:
+                        await self._save_browser_diagnostic(page, status)
+                        raise AvitoBlockedError(f"Chromium получил от Avito HTTP {status}")
+                    if status is not None and status >= 500:
+                        raise AvitoNetworkError(f"Chromium получил от Avito HTTP {status}")
+                    if status is not None and status >= 400:
+                        raise AvitoNetworkError(f"Неожиданный HTTP-статус Avito: {status}")
+
+                    with suppress(PlaywrightTimeoutError):
+                        await page.wait_for_selector(
+                            '[data-marker="item"], [data-item-id][itemtype*="Product"]',
+                            state="attached",
+                            timeout=min(8_000, self._settings.request_timeout_seconds * 1000),
+                        )
+                    html = await page.content()
+                    try:
+                        return parse_search_html(html)[: self._settings.max_results]
+                    except (AvitoBlockedError, AvitoParseError):
+                        await self._save_browser_diagnostic(page, status)
+                        raise
+                except AvitoBlockedError:
+                    raise
+                except (PlaywrightTimeoutError, PlaywrightError, AvitoNetworkError) as exc:
+                    last_error = exc
+                    if attempt < self._settings.request_retries:
+                        delay = min(8.0, 2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                        logger.warning(
+                            "Ошибка Chromium-запроса Avito, повтор через %.1f с: %s",
+                            delay,
+                            exc,
+                        )
+                        await asyncio.sleep(delay)
+                finally:
+                    await page.close()
+
+            raise AvitoNetworkError(f"Avito недоступен через Chromium: {last_error}")
+
+    async def open_manual_verification_page(self, url: str) -> tuple[Page, int | None]:
+        """Open Avito in the persistent profile for a user-completed verification."""
+        await self._start_browser()
+        assert self._browser_context is not None
+        page = await self._browser_context.new_page()
+        response = await page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=self._settings.request_timeout_seconds * 1000,
+        )
+        return page, response.status if response is not None else None
+
+    async def _save_browser_diagnostic(self, page: Page, status: int | None) -> None:
+        diagnostic_dir = self._settings.database_path.parent / "diagnostics"
+        diagnostic_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        screenshot_path = diagnostic_dir / f"avito-{status or 'unknown'}-{timestamp}.png"
+        try:
+            await page.screenshot(path=str(screenshot_path), full_page=False)
+            logger.warning("Диагностический снимок Avito сохранён: %s", screenshot_path)
+        except PlaywrightError as exc:
+            logger.warning("Не удалось сохранить снимок Avito: %s", exc)
 
     async def _search_route(
         self,

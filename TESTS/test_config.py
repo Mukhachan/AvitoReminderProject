@@ -13,6 +13,9 @@ def test_settings_split_telegram_and_avito_proxies(monkeypatch) -> None:
     monkeypatch.setenv("AVITO_PROXY", "socks5://127.0.0.1:20808")
     monkeypatch.setenv("AVITO_PROXY_MODE", "fallback")
     monkeypatch.setenv("AVITO_PROXY_RDNS", "true")
+    monkeypatch.setenv("AVITO_TRANSPORT", "browser")
+    monkeypatch.setenv("AVITO_BROWSER_HEADLESS", "true")
+    monkeypatch.setenv("AVITO_BROWSER_PROFILE_PATH", "data/test-browser-profile")
 
     settings = load_settings()
 
@@ -21,6 +24,9 @@ def test_settings_split_telegram_and_avito_proxies(monkeypatch) -> None:
     assert settings.http_proxy == "socks5://127.0.0.1:20808"
     assert settings.avito_proxy_mode == "fallback"
     assert settings.avito_proxy_rdns is True
+    assert settings.avito_transport == "browser"
+    assert settings.avito_browser_headless is True
+    assert settings.avito_browser_profile_path.as_posix() == "data/test-browser-profile"
 
 
 def test_settings_reject_invalid_proxy(monkeypatch) -> None:

@@ -4,12 +4,19 @@ import argparse
 import asyncio
 import socket
 import sys
+from dataclasses import replace
 from urllib.parse import urlsplit
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 
-from .avito import AvitoClient, AvitoError, build_search_url
+from .avito import (
+    AvitoClient,
+    AvitoError,
+    build_search_url,
+    parse_search_html,
+    resolve_chromium_executable,
+)
 from .config import load_settings
 from .database import Database
 from .telegram_transport import create_telegram_session
@@ -67,6 +74,12 @@ async def doctor(live: bool, telegram: bool, query: str, city: str) -> int:
         print("Avito live check: skipped (use --live)")
         return status
 
+    print("Avito transport:", settings.avito_transport)
+    if settings.avito_transport == "browser":
+        print(
+            "Avito Chromium:",
+            resolve_chromium_executable(settings) or "Playwright bundled Chromium",
+        )
     url = build_search_url(query, city)
     async with AvitoClient(settings) as client:
         try:
@@ -83,6 +96,35 @@ async def doctor(live: bool, telegram: bool, query: str, city: str) -> int:
     return status
 
 
+async def browser_setup(query: str, city: str) -> int:
+    settings = replace(
+        load_settings(require_bot_token=False),
+        avito_transport="browser",
+        avito_browser_headless=False,
+    )
+    url = build_search_url(query, city)
+    print("Открываю Avito в Chromium напрямую, без TELEGRAM_PROXY...")
+    async with AvitoClient(settings) as client:
+        page, status = await client.open_manual_verification_page(url)
+        try:
+            print("Первоначальный HTTP-статус:", status)
+            print("В открывшемся Chromium нажмите «Продолжить» и завершите проверку Avito.")
+            await asyncio.to_thread(
+                input, "Когда выдача откроется, вернитесь сюда и нажмите Enter: "
+            )
+            html = await page.content()
+            try:
+                items = parse_search_html(html)[: settings.max_results]
+            except AvitoError as exc:
+                print("Проверка профиля: FAIL -", exc)
+                return 2
+            print(f"Проверка профиля: OK, распознано объявлений: {len(items)}")
+            print("Профиль сохранён:", settings.avito_browser_profile_path)
+            return 0
+        finally:
+            await page.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Avito Reminder diagnostics")
     parser.add_argument("--live", action="store_true", help="perform a live Avito request")
@@ -90,9 +132,16 @@ def main() -> None:
         "--telegram", action="store_true", help="check the Telegram API using TELEGRAM_PROXY"
     )
     parser.add_argument("--all", action="store_true", help="check Telegram and Avito")
+    parser.add_argument(
+        "--setup-browser",
+        action="store_true",
+        help="open direct Chromium for manual Avito verification",
+    )
     parser.add_argument("--query", default="iPhone 13")
     parser.add_argument("--city", default="Москва")
     args = parser.parse_args()
+    if args.setup_browser:
+        raise SystemExit(asyncio.run(browser_setup(args.query, args.city)))
     raise SystemExit(
         asyncio.run(
             doctor(

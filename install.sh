@@ -30,6 +30,15 @@ echo "Устанавливаю зависимости..."
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install --upgrade -r requirements.txt
 
+if command -v chromium >/dev/null 2>&1; then
+    echo "Найден системный Chromium: $(command -v chromium)"
+elif command -v chromium-browser >/dev/null 2>&1; then
+    echo "Найден системный Chromium: $(command -v chromium-browser)"
+else
+    echo "Системный Chromium не найден; устанавливаю браузер Playwright..."
+    .venv/bin/python -m playwright install chromium
+fi
+
 if [[ ! -f .env ]]; then
     cp .env.example .env
     echo "Создан .env: Telegram через 127.0.0.1:20808, Avito напрямую. Добавьте токен."
@@ -44,6 +53,6 @@ chmod 700 data
 echo
 echo "Установка завершена."
 echo "1. Заполните токен: nano .env"
-echo "2. Проверьте VPN и API: bash check.sh"
+echo "2. Проверьте Telegram, Chromium и Avito: bash check.sh"
 echo "3. Тестовый запуск: bash start.sh"
 echo "4. Автозапуск: bash service.sh install"

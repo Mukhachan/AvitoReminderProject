@@ -70,6 +70,10 @@ class Settings:
     http_proxy: str | None
     avito_proxy_mode: str
     avito_proxy_rdns: bool
+    avito_transport: str
+    avito_browser_headless: bool
+    avito_browser_profile_path: Path
+    avito_chromium_executable: str | None
     user_agent: str
     log_level: str
 
@@ -108,6 +112,16 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
         http_proxy=avito_proxy,
         avito_proxy_mode=avito_proxy_mode,
         avito_proxy_rdns=_as_bool(os.getenv("AVITO_PROXY_RDNS"), True),
+        avito_transport=_choice(
+            "AVITO_TRANSPORT",
+            "browser",
+            {"browser", "http"},
+        ),
+        avito_browser_headless=_as_bool(os.getenv("AVITO_BROWSER_HEADLESS"), True),
+        avito_browser_profile_path=Path(
+            os.getenv("AVITO_BROWSER_PROFILE_PATH", "data/chromium-profile")
+        ),
+        avito_chromium_executable=os.getenv("AVITO_CHROMIUM_EXECUTABLE") or None,
         user_agent=os.getenv(
             "AVITO_USER_AGENT",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

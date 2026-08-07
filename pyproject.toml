@@ -13,6 +13,7 @@ dependencies = [
     "aiohttp>=3.11,<4",
     "beautifulsoup4>=4.13,<5",
     "python-dotenv>=1.1,<2",
+    "playwright>=1.54,<2",
 ]
 
 [project.scripts]
