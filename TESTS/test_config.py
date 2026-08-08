@@ -16,6 +16,8 @@ def test_settings_split_telegram_and_avito_proxies(monkeypatch) -> None:
     monkeypatch.setenv("AVITO_TRANSPORT", "browser")
     monkeypatch.setenv("AVITO_BROWSER_HEADLESS", "true")
     monkeypatch.setenv("AVITO_BROWSER_PROFILE_PATH", "data/test-browser-profile")
+    monkeypatch.setenv("AVITO_MIN_REQUEST_INTERVAL_SECONDS", "25")
+    monkeypatch.setenv("AVITO_REQUEST_JITTER_SECONDS", "5")
 
     settings = load_settings()
 
@@ -27,6 +29,8 @@ def test_settings_split_telegram_and_avito_proxies(monkeypatch) -> None:
     assert settings.avito_transport == "browser"
     assert settings.avito_browser_headless is True
     assert settings.avito_browser_profile_path.as_posix() == "data/test-browser-profile"
+    assert settings.avito_min_request_interval_seconds == 25
+    assert settings.avito_request_jitter_seconds == 5
 
 
 def test_settings_reject_invalid_proxy(monkeypatch) -> None:

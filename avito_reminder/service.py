@@ -8,7 +8,12 @@ from dataclasses import dataclass
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
+from aiogram.types import (
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LinkPreviewOptions,
+)
 
 from .avito import AvitoBlockedError, AvitoClient, AvitoError
 from .config import Settings
@@ -148,9 +153,28 @@ class MonitorService:
                 else " Следующая попытка будет выполнена автоматически."
             )
             try:
-                await self.bot.send_message(
-                    search.chat_id,
-                    f"⚠️ Поиск #{search.id} временно не проверен: {html.escape(str(exc))}.{hint}",
+                error_text = (
+                    f"⚠️ Поиск #{search.id} временно не проверен: {html.escape(str(exc))}.{hint}"
                 )
+                try:
+                    await self.bot.send_message(search.chat_id, error_text)
+                except TelegramRetryAfter as retry:
+                    await asyncio.sleep(retry.retry_after)
+                    await self.bot.send_message(search.chat_id, error_text)
+
+                if exc.diagnostic_path is not None and exc.diagnostic_path.is_file():
+
+                    async def send_screenshot() -> None:
+                        await self.bot.send_photo(
+                            chat_id=search.chat_id,
+                            photo=FSInputFile(exc.diagnostic_path),
+                            caption=f"📸 Страница Avito при ошибке поиска #{search.id}",
+                        )
+
+                    try:
+                        await send_screenshot()
+                    except TelegramRetryAfter as retry:
+                        await asyncio.sleep(retry.retry_after)
+                        await send_screenshot()
             except TelegramForbiddenError:
                 await self.database.set_active(search.id, search.chat_id, False)

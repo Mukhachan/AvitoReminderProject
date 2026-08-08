@@ -24,6 +24,8 @@ def settings(database_path: Path, **overrides: object) -> Settings:
         "avito_browser_headless": True,
         "avito_browser_profile_path": database_path.parent / "chromium-profile",
         "avito_chromium_executable": None,
+        "avito_min_request_interval_seconds": 1,
+        "avito_request_jitter_seconds": 0,
         "user_agent": "test-agent",
         "log_level": "WARNING",
     }

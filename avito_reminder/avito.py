@@ -9,6 +9,7 @@ import shutil
 from collections.abc import Iterable
 from contextlib import suppress
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlencode, urljoin, urlparse, urlsplit
 
 import aiohttp
@@ -48,6 +49,10 @@ def resolve_chromium_executable(settings: Settings) -> str | None:
 
 class AvitoError(RuntimeError):
     """Base error raised by the Avito client."""
+
+    def __init__(self, message: str, *, diagnostic_path: Path | None = None):
+        super().__init__(message)
+        self.diagnostic_path = diagnostic_path
 
 
 class AvitoNetworkError(AvitoError):
@@ -318,6 +323,7 @@ class AvitoClient:
         self._browser_context: BrowserContext | None = None
         self._browser_lock = asyncio.Lock()
         self._browser_warmed_up = False
+        self._last_browser_request_at: float | None = None
         self.last_route: str | None = None
 
     async def __aenter__(self) -> AvitoClient:
@@ -457,9 +463,11 @@ class AvitoClient:
 
     async def _search_browser(self, url: str) -> list[AvitoItem]:
         async with self._browser_lock:
+            await self._wait_for_browser_slot()
             await self._start_browser()
             assert self._browser_context is not None
             last_error: Exception | None = None
+            last_diagnostic_path: Path | None = None
 
             for attempt in range(1, self._settings.request_retries + 1):
                 page = await self._browser_context.new_page()
@@ -467,9 +475,10 @@ class AvitoClient:
                     if not self._browser_warmed_up:
                         home_status = await self._open_avito_home(page)
                         if home_status in {401, 403, 429}:
-                            await self._save_browser_diagnostic(page, home_status)
+                            diagnostic_path = await self._save_browser_diagnostic(page, home_status)
                             raise AvitoBlockedError(
-                                f"Главная страница Avito вернула HTTP {home_status}"
+                                f"Главная страница Avito вернула HTTP {home_status}",
+                                diagnostic_path=diagnostic_path,
                             )
                         if home_status is not None and home_status >= 400:
                             raise AvitoNetworkError(
@@ -485,8 +494,11 @@ class AvitoClient:
                     )
                     status = response.status if response is not None else None
                     if status in {401, 403, 429}:
-                        await self._save_browser_diagnostic(page, status)
-                        raise AvitoBlockedError(f"Chromium получил от Avito HTTP {status}")
+                        diagnostic_path = await self._save_browser_diagnostic(page, status)
+                        raise AvitoBlockedError(
+                            f"Chromium получил от Avito HTTP {status}",
+                            diagnostic_path=diagnostic_path,
+                        )
                     if status is not None and status >= 500:
                         raise AvitoNetworkError(f"Chromium получил от Avito HTTP {status}")
                     if status is not None and status >= 400:
@@ -501,13 +513,14 @@ class AvitoClient:
                     html = await page.content()
                     try:
                         return parse_search_html(html)[: self._settings.max_results]
-                    except (AvitoBlockedError, AvitoParseError):
-                        await self._save_browser_diagnostic(page, status)
+                    except (AvitoBlockedError, AvitoParseError) as exc:
+                        exc.diagnostic_path = await self._save_browser_diagnostic(page, status)
                         raise
                 except AvitoBlockedError:
                     raise
                 except (PlaywrightTimeoutError, PlaywrightError, AvitoNetworkError) as exc:
                     last_error = exc
+                    last_diagnostic_path = await self._save_browser_diagnostic(page, None)
                     if attempt < self._settings.request_retries:
                         delay = min(8.0, 2 ** (attempt - 1)) + random.uniform(0, 0.5)
                         logger.warning(
@@ -519,7 +532,21 @@ class AvitoClient:
                 finally:
                     await page.close()
 
-            raise AvitoNetworkError(f"Avito недоступен через Chromium: {last_error}")
+            raise AvitoNetworkError(
+                f"Avito недоступен через Chromium: {last_error}",
+                diagnostic_path=last_diagnostic_path,
+            )
+
+    async def _wait_for_browser_slot(self) -> None:
+        loop = asyncio.get_running_loop()
+        if self._last_browser_request_at is not None:
+            minimum = self._settings.avito_min_request_interval_seconds
+            jitter = random.uniform(0, self._settings.avito_request_jitter_seconds)
+            remaining = minimum + jitter - (loop.time() - self._last_browser_request_at)
+            if remaining > 0:
+                logger.info("Пауза %.1f с перед следующим запросом Avito", remaining)
+                await asyncio.sleep(remaining)
+        self._last_browser_request_at = loop.time()
 
     async def _open_avito_home(self, page: Page) -> int | None:
         response = await page.goto(
@@ -546,7 +573,7 @@ class AvitoClient:
         search_status = response.status if response is not None else None
         return page, home_status, search_status
 
-    async def _save_browser_diagnostic(self, page: Page, status: int | None) -> None:
+    async def _save_browser_diagnostic(self, page: Page, status: int | None) -> Path | None:
         diagnostic_dir = self._settings.database_path.parent / "diagnostics"
         diagnostic_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -554,8 +581,10 @@ class AvitoClient:
         try:
             await page.screenshot(path=str(screenshot_path), full_page=False)
             logger.warning("Диагностический снимок Avito сохранён: %s", screenshot_path)
+            return screenshot_path
         except PlaywrightError as exc:
             logger.warning("Не удалось сохранить снимок Avito: %s", exc)
+            return None
 
     async def _search_route(
         self,
