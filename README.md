@@ -67,7 +67,8 @@ AVITO_PROXY_RDNS=true
 
 Telegram всегда работает через Naive/SOCKS5. Avito открывается установленным Chromium через
 обычное подключение Raspberry Pi и не использует VPN. Профиль Chromium сохраняется между
-запусками в `data/chromium-profile`.
+запусками в `data/chromium-profile`. Перед выдачей браузер открывает `https://www.avito.ru/`,
+а затем переходит на поисковую ссылку в той же вкладке с cookies и referer главной страницы.
 
 Установка:
 

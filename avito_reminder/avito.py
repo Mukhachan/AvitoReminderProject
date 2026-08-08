@@ -317,6 +317,7 @@ class AvitoClient:
         self._playwright: Playwright | None = None
         self._browser_context: BrowserContext | None = None
         self._browser_lock = asyncio.Lock()
+        self._browser_warmed_up = False
         self.last_route: str | None = None
 
     async def __aenter__(self) -> AvitoClient:
@@ -339,6 +340,7 @@ class AvitoClient:
         if self._browser_context is not None:
             await self._browser_context.close()
             self._browser_context = None
+            self._browser_warmed_up = False
         if self._playwright is not None:
             await self._playwright.stop()
             self._playwright = None
@@ -462,10 +464,24 @@ class AvitoClient:
             for attempt in range(1, self._settings.request_retries + 1):
                 page = await self._browser_context.new_page()
                 try:
+                    if not self._browser_warmed_up:
+                        home_status = await self._open_avito_home(page)
+                        if home_status in {401, 403, 429}:
+                            await self._save_browser_diagnostic(page, home_status)
+                            raise AvitoBlockedError(
+                                f"Главная страница Avito вернула HTTP {home_status}"
+                            )
+                        if home_status is not None and home_status >= 400:
+                            raise AvitoNetworkError(
+                                f"Главная страница Avito вернула HTTP {home_status}"
+                            )
+                        self._browser_warmed_up = True
+
                     response = await page.goto(
                         url,
                         wait_until="domcontentloaded",
                         timeout=self._settings.request_timeout_seconds * 1000,
+                        referer=f"{AVITO_BASE_URL}/",
                     )
                     status = response.status if response is not None else None
                     if status in {401, 403, 429}:
@@ -505,17 +521,30 @@ class AvitoClient:
 
             raise AvitoNetworkError(f"Avito недоступен через Chromium: {last_error}")
 
-    async def open_manual_verification_page(self, url: str) -> tuple[Page, int | None]:
+    async def _open_avito_home(self, page: Page) -> int | None:
+        response = await page.goto(
+            f"{AVITO_BASE_URL}/",
+            wait_until="domcontentloaded",
+            timeout=self._settings.request_timeout_seconds * 1000,
+        )
+        status = response.status if response is not None else None
+        logger.info("Главная страница Avito открыта через Chromium: HTTP %s", status)
+        return status
+
+    async def open_manual_verification_page(self, url: str) -> tuple[Page, int | None, int | None]:
         """Open Avito in the persistent profile for a user-completed verification."""
         await self._start_browser()
         assert self._browser_context is not None
         page = await self._browser_context.new_page()
+        home_status = await self._open_avito_home(page)
         response = await page.goto(
             url,
             wait_until="domcontentloaded",
             timeout=self._settings.request_timeout_seconds * 1000,
+            referer=f"{AVITO_BASE_URL}/",
         )
-        return page, response.status if response is not None else None
+        search_status = response.status if response is not None else None
+        return page, home_status, search_status
 
     async def _save_browser_diagnostic(self, page: Page, status: int | None) -> None:
         diagnostic_dir = self._settings.database_path.parent / "diagnostics"

@@ -105,9 +105,10 @@ async def browser_setup(query: str, city: str) -> int:
     url = build_search_url(query, city)
     print("Открываю Avito в Chromium напрямую, без TELEGRAM_PROXY...")
     async with AvitoClient(settings) as client:
-        page, status = await client.open_manual_verification_page(url)
+        page, home_status, search_status = await client.open_manual_verification_page(url)
         try:
-            print("Первоначальный HTTP-статус:", status)
+            print("Главная страница Avito, HTTP:", home_status)
+            print("Поисковая страница Avito, HTTP:", search_status)
             print("В открывшемся Chromium нажмите «Продолжить» и завершите проверку Avito.")
             await asyncio.to_thread(
                 input, "Когда выдача откроется, вернитесь сюда и нажмите Enter: "
