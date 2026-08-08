@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import (
-    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LinkPreviewOptions,
@@ -114,7 +113,7 @@ class MonitorService:
                 await self.database.mark_failure(search.id, str(exc), 300)
                 return CheckResult(0, 0, 0, "Внутренняя ошибка проверки")
 
-    async def _notify_avito_waiting(self, search: Search, exc: AvitoBlockedError) -> None:
+    async def _notify_avito_waiting(self, search: Search, _exc: AvitoBlockedError) -> None:
         text = (
             f"⏳ <b>Поиск #{search.id}: Avito ограничил доступ.</b>\n"
             "Chromium оставлен открытым. Обновление через "
@@ -127,20 +126,6 @@ class MonitorService:
                 await asyncio.sleep(retry.retry_after)
                 await self.bot.send_message(search.chat_id, text)
 
-            if exc.diagnostic_path is not None and exc.diagnostic_path.is_file():
-
-                async def send_screenshot() -> None:
-                    await self.bot.send_photo(
-                        chat_id=search.chat_id,
-                        photo=FSInputFile(exc.diagnostic_path),
-                        caption=f"📸 Avito при начале ожидания, поиск #{search.id}",
-                    )
-
-                try:
-                    await send_screenshot()
-                except TelegramRetryAfter as retry:
-                    await asyncio.sleep(retry.retry_after)
-                    await send_screenshot()
         except TelegramForbiddenError:
             await self.database.set_active(search.id, search.chat_id, False)
 
@@ -195,19 +180,5 @@ class MonitorService:
                     await asyncio.sleep(retry.retry_after)
                     await self.bot.send_message(search.chat_id, error_text)
 
-                if exc.diagnostic_path is not None and exc.diagnostic_path.is_file():
-
-                    async def send_screenshot() -> None:
-                        await self.bot.send_photo(
-                            chat_id=search.chat_id,
-                            photo=FSInputFile(exc.diagnostic_path),
-                            caption=f"📸 Страница Avito при ошибке поиска #{search.id}",
-                        )
-
-                    try:
-                        await send_screenshot()
-                    except TelegramRetryAfter as retry:
-                        await asyncio.sleep(retry.retry_after)
-                        await send_screenshot()
             except TelegramForbiddenError:
                 await self.database.set_active(search.id, search.chat_id, False)

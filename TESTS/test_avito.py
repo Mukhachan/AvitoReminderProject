@@ -216,11 +216,11 @@ def test_browser_waits_and_reloads_until_avito_access_returns(tmp_path, monkeypa
     assert block_notifications[0].diagnostic_path == tmp_path / "blocked.png"
 
 
-def test_browser_waits_90_seconds_and_reloads_even_when_page_opened_normally(
+def test_browser_continues_without_wait_or_reload_when_page_opened_normally(
     tmp_path, monkeypatch
 ) -> None:
     ready_html = "<html><title>Avito</title><main>Главная</main></html>"
-    page = ReloadingPageStub([(200, ready_html)])
+    page = ReloadingPageStub([])
     client = AvitoClient(
         settings(
             tmp_path / "test.db",
@@ -245,5 +245,5 @@ def test_browser_waits_90_seconds_and_reloads_even_when_page_opened_normally(
     )
 
     assert result == (200, ready_html, False)
-    assert page.reload_count == 1
-    assert delays == [90]
+    assert page.reload_count == 0
+    assert delays == []

@@ -76,7 +76,7 @@ def test_monitor_sends_new_item_once(tmp_path) -> None:
     asyncio.run(scenario())
 
 
-def test_monitor_sends_avito_error_screenshot(tmp_path) -> None:
+def test_monitor_reports_avito_error_without_sending_screenshot(tmp_path) -> None:
     async def scenario() -> None:
         cfg = settings(tmp_path / "service.db")
         database = Database(cfg.database_path)
@@ -104,8 +104,6 @@ def test_monitor_sends_avito_error_screenshot(tmp_path) -> None:
 
         assert result.error == "Chromium получил от Avito HTTP 403"
         assert len(bot.messages) == 1
-        assert len(bot.photos) == 1
-        assert bot.photos[0][0] == search.chat_id
-        assert "ошибке поиска #1" in bot.photos[0][2]
+        assert bot.photos == []
 
     asyncio.run(scenario())

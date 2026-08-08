@@ -58,6 +58,15 @@ def _is_avito_url(url: str) -> bool:
     return hostname == "avito.ru" or hostname.endswith(".avito.ru")
 
 
+def _is_avito_page_ready(status: int | None, html: str, url: str) -> bool:
+    return (
+        status is not None
+        and status < 400
+        and _is_avito_url(url)
+        and not _is_blocked_page(status, html)
+    )
+
+
 def _has_target_search_query(current_url: str, target_url: str) -> bool:
     current_query = parse_qs(urlsplit(current_url).query).get("q")
     target_query = parse_qs(urlsplit(target_url).query).get("q")
@@ -618,7 +627,11 @@ class AvitoClient:
         page_name: str,
         on_blocked: BlockedCallback | None = None,
     ) -> tuple[int | None, str, bool]:
-        """Wait before the first reload and repeat while Avito is not ready."""
+        """Return immediately on success; wait and reload only after an Avito error."""
+        if _is_avito_page_ready(status, html, page.url):
+            logger.info("Avito: %s успешно загружена без ожидания", page_name)
+            return status, html, False
+
         diagnostic_path: Path | None = None
         block_notified = False
         reload_number = 0
@@ -648,7 +661,7 @@ class AvitoClient:
             reload_number += 1
             delay = self._settings.avito_page_reload_delay_seconds
             logger.info(
-                "Avito: %s; обязательное обновление %s через %s с",
+                "Avito: %s вернула ошибку; повторное обновление %s через %s с",
                 page_name,
                 reload_number,
                 delay,
@@ -671,12 +684,7 @@ class AvitoClient:
                 status = None
                 continue
 
-            if (
-                _is_blocked_page(status, html)
-                or status is None
-                or status >= 400
-                or not _is_avito_url(page.url)
-            ):
+            if not _is_avito_page_ready(status, html, page.url):
                 logger.warning(
                     "Avito пока не готов: HTTP %s, URL %s",
                     status,
