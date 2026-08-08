@@ -71,12 +71,16 @@ class Settings:
     avito_proxy_mode: str
     avito_proxy_rdns: bool
     avito_transport: str
+    avito_http_impersonate: str
+    avito_api_max_pages: int
     avito_browser_headless: bool
     avito_browser_profile_path: Path
     avito_chromium_executable: str | None
     avito_min_request_interval_seconds: int
     avito_request_jitter_seconds: int
     avito_page_reload_delay_seconds: int
+    avito_error_reload_attempts: int
+    avito_cooldown_seconds: int
     user_agent: str
     log_level: str
 
@@ -117,9 +121,12 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
         avito_proxy_rdns=_as_bool(os.getenv("AVITO_PROXY_RDNS"), True),
         avito_transport=_choice(
             "AVITO_TRANSPORT",
-            "browser",
-            {"browser", "http"},
+            "hybrid",
+            {"browser", "http", "hybrid"},
         ),
+        avito_http_impersonate=os.getenv("AVITO_HTTP_IMPERSONATE", "chrome").strip()
+        or "chrome",
+        avito_api_max_pages=_as_int("AVITO_API_MAX_PAGES", 3),
         avito_browser_headless=_as_bool(os.getenv("AVITO_BROWSER_HEADLESS"), True),
         avito_browser_profile_path=Path(
             os.getenv("AVITO_BROWSER_PROFILE_PATH", "data/chromium-profile")
@@ -128,6 +135,8 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
         avito_min_request_interval_seconds=_as_int("AVITO_MIN_REQUEST_INTERVAL_SECONDS", 60),
         avito_request_jitter_seconds=_as_int("AVITO_REQUEST_JITTER_SECONDS", 30, minimum=0),
         avito_page_reload_delay_seconds=_as_int("AVITO_PAGE_RELOAD_DELAY_SECONDS", 90),
+        avito_error_reload_attempts=_as_int("AVITO_ERROR_RELOAD_ATTEMPTS", 3),
+        avito_cooldown_seconds=_as_int("AVITO_COOLDOWN_SECONDS", 10_800),
         user_agent=os.getenv(
             "AVITO_USER_AGENT",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

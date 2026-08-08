@@ -33,6 +33,12 @@ def test_database_search_and_notification_lifecycle(tmp_path) -> None:
         updated = await database.get_search(search.id, 100)
         assert updated is not None and updated.initialized and updated.last_error is None
 
+        previous_next_check = updated.next_check_at
+        assert await database.postpone_active_searches(10_800) == 1
+        postponed = await database.get_search(search.id, 100)
+        assert postponed is not None
+        assert postponed.next_check_at > previous_next_check
+
         assert await database.set_active(search.id, 100, False)
         paused = await database.get_search(search.id, 100)
         assert paused is not None and not paused.active

@@ -13,7 +13,7 @@ Telegram-бот сохраняет параметры поиска Avito, пер
 - SQLite без отдельного сервера баз данных;
 - защита от повторной отправки объявлений;
 - повторные запросы, тайм-ауты и backoff;
-- получение выдачи через постоянный профиль Chromium с прямым подключением;
+- гибридный парсинг: постоянный профиль Chromium, MFE JSON и JSON-пагинация Avito;
 - явное обнаружение блокировки IP/капчи Avito;
 - диагностика и тесты;
 - запуск напрямую или через Docker Compose.
@@ -59,10 +59,14 @@ Telegram использует тот же локальный SOCKS5-порт, ч
 ```dotenv
 TELEGRAM_PROXY=socks5://127.0.0.1:20808
 TELEGRAM_PROXY_RDNS=true
-AVITO_TRANSPORT=browser
+AVITO_TRANSPORT=hybrid
+AVITO_HTTP_IMPERSONATE=chrome
+AVITO_API_MAX_PAGES=3
 AVITO_BROWSER_HEADLESS=true
 AVITO_BROWSER_PROFILE_PATH=data/chromium-profile
 AVITO_PAGE_RELOAD_DELAY_SECONDS=90
+AVITO_ERROR_RELOAD_ATTEMPTS=3
+AVITO_COOLDOWN_SECONDS=10800
 AVITO_PROXY_MODE=direct
 AVITO_PROXY=
 AVITO_PROXY_RDNS=true
@@ -74,6 +78,22 @@ Telegram всегда работает через Naive/SOCKS5. Avito откры
 а затем переходит на поисковую ссылку в той же вкладке с cookies и referer главной страницы.
 Между последовательными поисками выдерживается глобальная пауза 60–90 секунд, поэтому несколько
 подписок не создают пачку одновременных обращений к Avito.
+
+После успешной загрузки первой страницы бот использует алгоритм, адаптированный из
+`Duff89/parser_avito`:
+
+1. извлекает структурированный каталог, `searchCore` и `context` из
+   `script[type="mime/invalid"][data-mfe-state="true"]`;
+2. синхронизирует cookies постоянного Chromium-профиля с одной долгоживущей сессией
+   `curl_cffi`;
+3. при необходимости получает страницы 2–3 через `/web/1/js/items`;
+4. сохраняет один стабильный Chrome TLS/HTTP-отпечаток на весь процесс;
+5. при изменении внутреннего JSON Avito возвращается к разбору HTML-карточек первой страницы.
+
+`AVITO_API_MAX_PAGES` ограничивает нагрузку внутренней пагинации. `AVITO_HTTP_IMPERSONATE`
+лучше оставлять равным `chrome`: случайная смена Chrome/Safari/Firefox при тех же cookies
+создавала бы противоречивый отпечаток. Внешние cookies, автоматическое решение капчи и смена IP
+не используются.
 
 Установка:
 
@@ -158,9 +178,12 @@ bash service.sh start
 Если Avito вернул ошибку, блокировку или капчу, вкладка остаётся открытой, парсер ждёт
 90 секунд и делает повторное обновление. Цикл повторяется только пока сохраняется ошибка. Первый
 снимок сохраняется только локально в `data/diagnostics`; в Telegram скриншоты не отправляются. После восстановления
-главной страницы парсер сразу переходит к текущему поиску. Бот не обходит капчу автоматически;
+главной страницы парсер сразу переходит к текущему поиску. После трёх неудачных перезагрузок
+подряд все обращения к Avito приостанавливаются на 10800 секунд (3 часа). После паузы мониторинг
+возобновляется автоматически. Бот не обходит капчу автоматически;
 в видимом режиме её можно завершить вручную. Для прежнего HTTP-клиента
-можно вручную задать `AVITO_TRANSPORT=http`, но основной серверный режим — `browser`.
+можно вручную задать `AVITO_TRANSPORT=http`; `AVITO_TRANSPORT=browser` отключает только
+JSON-пагинацию. Основной серверный режим — `hybrid`.
 `AVITO_PROXY_MODE=direct` гарантирует, что HTTP-режим также не использует Naive.
 
 ## Тесты и качество
@@ -191,7 +214,8 @@ docker compose logs -f bot
 
 ## Структура
 
-- `avito_reminder/avito.py` — Chromium/HTTP-клиент, URL и разбор выдачи;
+- `avito_reminder/avito.py` — Chromium/HTTP-клиент, URL и управление выдачей;
+- `avito_reminder/avito_mfe.py` — разбор MFE-состояния и внутренней JSON-пагинации;
 - `avito_reminder/database.py` — SQLite и дедупликация;
 - `avito_reminder/telegram.py` — команды и сценарий ввода;
 - `avito_reminder/service.py` — планировщик и уведомления;

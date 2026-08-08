@@ -217,15 +217,12 @@ def _confirmation_keyboard() -> InlineKeyboardMarkup:
 
 def _search_text(search: Search) -> str:
     status = "🟢 активен" if search.active else "⏸ приостановлен"
-    error = f"\n⚠️ Последняя ошибка: {html.escape(search.last_error)}" if search.last_error else ""
-    initialized = "да" if search.initialized else "первая проверка ожидается"
     return (
         f"<b>Поиск #{search.id}</b> · {status}\n"
         f"🔎 {html.escape(search.query)}\n"
         f"📍 {html.escape(search.city)}\n"
         f"💰 {_price_range(search.price_min, search.price_max)}\n"
         f"⏱ Каждые {_format_interval(search.interval_seconds)}\n"
-        f"✅ Проверялся: {initialized}{error}"
     )
 
 

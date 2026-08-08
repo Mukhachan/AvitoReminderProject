@@ -55,6 +55,7 @@ class MonitorService:
         self._stop = asyncio.Event()
         self._locks: dict[int, asyncio.Lock] = {}
         self._semaphore = asyncio.Semaphore(3)
+        self._cooldown_notified_until: dict[int, float] = {}
 
     async def run(self) -> None:
         logger.info("Мониторинг Avito запущен")
@@ -160,16 +161,35 @@ class MonitorService:
 
     async def _handle_avito_error(self, search: Search, exc: AvitoError) -> None:
         blocked = isinstance(exc, AvitoBlockedError)
-        retry_seconds = 1800 if blocked else min(1800, 60 * (2 ** min(search.failure_count, 4)))
+        retry_seconds = exc.retry_after_seconds
+        if retry_seconds is None:
+            retry_seconds = (
+                1800 if blocked else min(1800, 60 * (2 ** min(search.failure_count, 4)))
+            )
+        if exc.retry_after_seconds is not None:
+            await self.database.postpone_active_searches(retry_seconds)
         await self.database.mark_failure(search.id, str(exc), retry_seconds)
         logger.warning("Поиск #%s не проверен: %s", search.id, exc)
 
-        if search.failure_count in {0, 2, 5}:
-            hint = (
-                " Avito запросил капчу или ограничил IP. Проверьте сеть/прокси в конфигурации."
-                if blocked
-                else " Следующая попытка будет выполнена автоматически."
-            )
+        should_notify = search.failure_count in {0, 2, 5}
+        if exc.retry_after_seconds is not None:
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            should_notify = self._cooldown_notified_until.get(search.chat_id, 0) <= now
+            if should_notify:
+                self._cooldown_notified_until[search.chat_id] = now + retry_seconds
+
+        if should_notify:
+            if exc.retry_after_seconds is not None:
+                hours = max(1, round(retry_seconds / 3600))
+                hint = f" Все запросы к Avito поставлены на паузу примерно на {hours} ч."
+            elif blocked:
+                hint = (
+                    " Avito запросил капчу или ограничил IP. "
+                    "Проверьте обычное подключение Raspberry Pi."
+                )
+            else:
+                hint = " Следующая попытка будет выполнена автоматически."
             try:
                 error_text = (
                     f"⚠️ Поиск #{search.id} временно не проверен: {html.escape(str(exc))}.{hint}"

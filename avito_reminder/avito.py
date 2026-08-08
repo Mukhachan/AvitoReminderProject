@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import random
 import re
 import shutil
@@ -15,6 +16,8 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlsplit
 import aiohttp
 from aiohttp_socks import ProxyConnector
 from bs4 import BeautifulSoup, Tag
+from curl_cffi.requests import AsyncSession as CurlAsyncSession
+from curl_cffi.requests.exceptions import RequestException as CurlRequestError
 from playwright.async_api import (
     BrowserContext,
     Page,
@@ -28,6 +31,12 @@ from playwright.async_api import (
     TimeoutError as PlaywrightTimeoutError,
 )
 
+from .avito_mfe import (
+    AvitoPageState,
+    catalog_from_api_response,
+    extract_page_state,
+    parse_api_response,
+)
 from .config import Settings
 from .models import AvitoItem
 
@@ -87,9 +96,16 @@ def resolve_chromium_executable(settings: Settings) -> str | None:
 class AvitoError(RuntimeError):
     """Base error raised by the Avito client."""
 
-    def __init__(self, message: str, *, diagnostic_path: Path | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostic_path: Path | None = None,
+        retry_after_seconds: int | None = None,
+    ):
         super().__init__(message)
         self.diagnostic_path = diagnostic_path
+        self.retry_after_seconds = retry_after_seconds
 
 
 class AvitoNetworkError(AvitoError):
@@ -334,6 +350,10 @@ def parse_search_html(html: str) -> list[AvitoItem]:
     if _is_blocked_html(html):
         raise AvitoBlockedError("Avito ограничил доступ с текущего IP или запросил капчу")
 
+    page_state = extract_page_state(html)
+    if page_state is not None:
+        return list(page_state.items)
+
     soup = BeautifulSoup(html, "html.parser")
     items = _parse_cards(soup) or _parse_json_ld(soup)
     if items:
@@ -351,11 +371,13 @@ class AvitoClient:
         self._settings = settings
         self._direct_session: aiohttp.ClientSession | None = None
         self._proxy_session: aiohttp.ClientSession | None = None
+        self._curl_session: CurlAsyncSession | None = None
         self._playwright: Playwright | None = None
         self._browser_context: BrowserContext | None = None
         self._browser_lock = asyncio.Lock()
         self._browser_warmed_up = False
         self._last_browser_request_at: float | None = None
+        self._cooldown_until: float | None = None
         self.last_route: str | None = None
 
     async def __aenter__(self) -> AvitoClient:
@@ -366,7 +388,7 @@ class AvitoClient:
         await self.close()
 
     async def start(self) -> None:
-        if self._settings.avito_transport == "browser":
+        if self._settings.avito_transport in {"browser", "hybrid"}:
             await self._start_browser()
         else:
             await self._get_session(use_proxy=self._routes()[0])
@@ -375,6 +397,9 @@ class AvitoClient:
         for session in (self._direct_session, self._proxy_session):
             if session and not session.closed:
                 await session.close()
+        if self._curl_session is not None:
+            await self._curl_session.close()
+            self._curl_session = None
         if self._browser_context is not None:
             await self._browser_context.close()
             self._browser_context = None
@@ -460,8 +485,12 @@ class AvitoClient:
         *,
         on_blocked: BlockedCallback | None = None,
     ) -> list[AvitoItem]:
-        if self._settings.avito_transport == "browser":
-            self.last_route = "chromium-direct"
+        if self._settings.avito_transport in {"browser", "hybrid"}:
+            self.last_route = (
+                "chromium+curl-direct"
+                if self._settings.avito_transport == "hybrid"
+                else "chromium-direct"
+            )
             return await self._search_browser(url, on_blocked=on_blocked)
 
         headers = {
@@ -505,6 +534,7 @@ class AvitoClient:
         on_blocked: BlockedCallback | None = None,
     ) -> list[AvitoItem]:
         async with self._browser_lock:
+            self._raise_if_cooling_down()
             await self._wait_for_browser_slot()
             await self._start_browser()
             assert self._browser_context is not None
@@ -555,8 +585,17 @@ class AvitoClient:
                             state="attached",
                             timeout=min(8_000, self._settings.request_timeout_seconds * 1000),
                         )
+                    html = await page.content()
                     try:
-                        return parse_search_html(html)[: self._settings.max_results]
+                        page_state = extract_page_state(html)
+                        items = parse_search_html(html)
+                        if self._settings.avito_transport == "hybrid" and page_state is not None:
+                            items = await self._extend_with_api_pages(
+                                items,
+                                page_state=page_state,
+                                search_url=url,
+                            )
+                        return items[: self._settings.max_results]
                     except (AvitoBlockedError, AvitoParseError) as exc:
                         exc.diagnostic_path = await self._save_browser_diagnostic(page, status)
                         raise
@@ -581,6 +620,157 @@ class AvitoClient:
                 diagnostic_path=last_diagnostic_path,
             )
 
+    async def _get_curl_session(self) -> CurlAsyncSession:
+        if self._curl_session is not None:
+            return self._curl_session
+
+        proxies: dict[str, str] | None = None
+        if self._settings.avito_proxy_mode == "proxy":
+            if not self._settings.http_proxy:
+                raise AvitoNetworkError("Для прокси-маршрута не задан AVITO_PROXY")
+            proxies = {
+                "http": self._settings.http_proxy,
+                "https": self._settings.http_proxy,
+            }
+        self._curl_session = CurlAsyncSession(
+            impersonate=self._settings.avito_http_impersonate,
+            timeout=self._settings.request_timeout_seconds,
+            trust_env=False,
+            proxies=proxies,
+        )
+        return self._curl_session
+
+    async def _sync_browser_cookies_to_curl(self, session: CurlAsyncSession) -> None:
+        assert self._browser_context is not None
+        browser_cookies = await self._browser_context.cookies([AVITO_BASE_URL])
+        for cookie in browser_cookies:
+            expires_value = cookie.get("expires")
+            expires = (
+                int(expires_value)
+                if isinstance(expires_value, (int, float)) and expires_value > 0
+                else None
+            )
+            session.cookies.set(
+                cookie["name"],
+                cookie["value"],
+                domain=cookie.get("domain") or ".avito.ru",
+                path=cookie.get("path") or "/",
+                secure=bool(cookie.get("secure")),
+                expires=expires,
+            )
+        logger.debug("В HTTP-сессию Avito синхронизировано cookies: %s", len(browser_cookies))
+
+    async def _request_api_page(
+        self,
+        *,
+        page_number: int,
+        page_state: AvitoPageState,
+        search_url: str,
+    ) -> list[AvitoItem]:
+        session = await self._get_curl_session()
+        params = dict(page_state.api_params)
+        params.update(
+            {
+                "p": str(page_number),
+                "context": page_state.context or "",
+                "updateListOnly": "true",
+            }
+        )
+        last_error: Exception | None = None
+        for attempt in range(1, self._settings.request_retries + 1):
+            try:
+                response = await session.get(
+                    f"{AVITO_BASE_URL}/web/1/js/items",
+                    params=params,
+                    headers={
+                        "accept": "application/json, text/plain, */*",
+                        "accept-language": "ru-RU,ru;q=0.9",
+                        "referer": search_url,
+                    },
+                    allow_redirects=True,
+                )
+                if response.status_code in AVITO_BLOCK_HTTP_STATUSES:
+                    raise AvitoBlockedError(
+                        f"JSON-пагинация Avito вернула HTTP {response.status_code}"
+                    )
+                if response.status_code >= 500:
+                    raise AvitoNetworkError(
+                        f"JSON-пагинация Avito вернула HTTP {response.status_code}"
+                    )
+                if response.status_code != 200:
+                    raise AvitoNetworkError(
+                        "Неожиданный статус JSON-пагинации Avito: "
+                        f"HTTP {response.status_code}"
+                    )
+                if _is_blocked_html(response.text):
+                    raise AvitoBlockedError("JSON-пагинация Avito вернула страницу блокировки")
+                try:
+                    payload = response.json()
+                except (json.JSONDecodeError, ValueError) as exc:
+                    raise AvitoParseError(
+                        "JSON-пагинация Avito ответила не JSON-данными"
+                    ) from exc
+                if catalog_from_api_response(payload) is None:
+                    raise AvitoParseError(
+                        "В ответе JSON-пагинации Avito отсутствует catalog"
+                    )
+                return parse_api_response(payload)
+            except AvitoBlockedError:
+                raise
+            except (CurlRequestError, AvitoNetworkError) as exc:
+                last_error = exc
+                if attempt < self._settings.request_retries:
+                    delay = min(8.0, 2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                    logger.warning(
+                        "Ошибка JSON-пагинации Avito, повтор через %.1f с: %s",
+                        delay,
+                        exc,
+                    )
+                    await asyncio.sleep(delay)
+        raise AvitoNetworkError(f"JSON-пагинация Avito недоступна: {last_error}")
+
+    async def _extend_with_api_pages(
+        self,
+        first_page_items: list[AvitoItem],
+        *,
+        page_state: AvitoPageState,
+        search_url: str,
+    ) -> list[AvitoItem]:
+        if (
+            not first_page_items
+            or len(first_page_items) >= self._settings.max_results
+            or not page_state.context
+            or not page_state.api_params
+            or self._settings.avito_api_max_pages <= 1
+        ):
+            return first_page_items
+
+        session = await self._get_curl_session()
+        await self._sync_browser_cookies_to_curl(session)
+        result = {item.id: item for item in first_page_items}
+        for page_number in range(2, self._settings.avito_api_max_pages + 1):
+            try:
+                page_items = await self._request_api_page(
+                    page_number=page_number,
+                    page_state=page_state,
+                    search_url=search_url,
+                )
+            except AvitoError as exc:
+                logger.warning(
+                    "JSON-пагинация Avito остановлена на странице %s: %s. "
+                    "Результаты первой страницы сохранены.",
+                    page_number,
+                    exc,
+                )
+                break
+            if not page_items:
+                break
+            before = len(result)
+            result.update((item.id, item) for item in page_items)
+            if len(result) == before or len(result) >= self._settings.max_results:
+                break
+        return list(result.values())
+
     async def _wait_for_browser_slot(self) -> None:
         loop = asyncio.get_running_loop()
         if self._last_browser_request_at is not None:
@@ -591,6 +781,23 @@ class AvitoClient:
                 logger.info("Пауза %.1f с перед следующим запросом Avito", remaining)
                 await asyncio.sleep(remaining)
         self._last_browser_request_at = loop.time()
+
+    def _raise_if_cooling_down(self) -> None:
+        if self._cooldown_until is None:
+            return
+        remaining = self._cooldown_until - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            self._cooldown_until = None
+            return
+        retry_after_seconds = math.ceil(remaining)
+        raise AvitoBlockedError(
+            f"Avito на паузе ещё {retry_after_seconds} секунд после серии ошибок",
+            retry_after_seconds=retry_after_seconds,
+        )
+
+    def _start_cooldown(self) -> None:
+        loop = asyncio.get_running_loop()
+        self._cooldown_until = loop.time() + self._settings.avito_cooldown_seconds
 
     async def _navigate_avito_page(
         self,
@@ -682,23 +889,39 @@ class AvitoClient:
             except (PlaywrightTimeoutError, PlaywrightError) as exc:
                 logger.warning("Не удалось обновить Avito: %s", exc)
                 status = None
-                continue
 
-            if not _is_avito_page_ready(status, html, page.url):
-                logger.warning(
-                    "Avito пока не готов: HTTP %s, URL %s",
+            if _is_avito_page_ready(status, html, page.url):
+                logger.info(
+                    "Avito: %s готова после ожидания и %s обновлений, HTTP %s",
+                    page_name,
+                    reload_number,
                     status,
-                    page.url,
                 )
-                continue
+                return status, html, block_notified
 
-            logger.info(
-                "Avito: %s готова после ожидания и %s обновлений, HTTP %s",
-                page_name,
-                reload_number,
+            logger.warning(
+                "Avito пока не готов: HTTP %s, URL %s, неудач %s/%s",
                 status,
+                page.url,
+                reload_number,
+                self._settings.avito_error_reload_attempts,
             )
-            return status, html, block_notified
+            if reload_number >= self._settings.avito_error_reload_attempts:
+                if diagnostic_path is None:
+                    diagnostic_path = await self._save_browser_diagnostic(page, status)
+                self._start_cooldown()
+                cooldown = self._settings.avito_cooldown_seconds
+                logger.warning(
+                    "Avito не открылся после %s перезагрузок; пауза на %s с",
+                    reload_number,
+                    cooldown,
+                )
+                raise AvitoBlockedError(
+                    f"Avito не открылся после {reload_number} перезагрузок; "
+                    f"парсер приостановлен на {cooldown // 3600} ч.",
+                    diagnostic_path=diagnostic_path,
+                    retry_after_seconds=cooldown,
+                )
 
     async def _open_avito_home(
         self,

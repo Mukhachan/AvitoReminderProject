@@ -224,6 +224,25 @@ class Database:
             )
             return cursor.rowcount > 0
 
+    async def postpone_active_searches(self, delay_seconds: int) -> int:
+        return await asyncio.to_thread(self._postpone_active_searches, delay_seconds)
+
+    def _postpone_active_searches(self, delay_seconds: int) -> int:
+        resume_at = as_iso(utc_now() + timedelta(seconds=delay_seconds))
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE searches
+                SET next_check_at = CASE
+                    WHEN next_check_at < ? THEN ?
+                    ELSE next_check_at
+                END
+                WHERE active = 1
+                """,
+                (resume_at, resume_at),
+            )
+            return cursor.rowcount
+
     async def delete_search(self, search_id: int, chat_id: int) -> bool:
         return await asyncio.to_thread(self._delete_search, search_id, chat_id)
 

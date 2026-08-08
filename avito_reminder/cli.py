@@ -75,11 +75,14 @@ async def doctor(live: bool, telegram: bool, query: str, city: str) -> int:
         return status
 
     print("Avito transport:", settings.avito_transport)
-    if settings.avito_transport == "browser":
+    if settings.avito_transport in {"browser", "hybrid"}:
         print(
             "Avito Chromium:",
             resolve_chromium_executable(settings) or "Playwright bundled Chromium",
         )
+    if settings.avito_transport == "hybrid":
+        print("Avito HTTP fingerprint:", settings.avito_http_impersonate)
+        print("Avito API page limit:", settings.avito_api_max_pages)
     url = build_search_url(query, city)
     async with AvitoClient(settings) as client:
         try:

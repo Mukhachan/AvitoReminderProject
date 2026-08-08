@@ -15,6 +15,13 @@ from avito_reminder.avito import (
     city_slug,
     parse_search_html,
 )
+from avito_reminder.avito_mfe import (
+    AvitoPageState,
+    build_api_params,
+    extract_page_state,
+    parse_api_response,
+)
+from avito_reminder.models import AvitoItem
 
 from .helpers import settings
 
@@ -116,6 +123,136 @@ def test_parse_json_ld_fallback() -> None:
     html = f'<script type="application/ld+json">{json.dumps(payload)}</script>'
     items = parse_search_html(html)
     assert [(item.id, item.price) for item in items] == [("9876543210", 12_500)]
+
+
+def test_parse_mfe_state_before_dom_fallback() -> None:
+    payload = {
+        "i18n": {"hasMessages": True},
+        "loaderData": {
+            "data": {
+                "context": "search-context-token",
+                "searchCore": {
+                    "categoryId": 99,
+                    "locationId": 637640,
+                    "priceMin": 10_000,
+                    "params": {"201": ["1059"]},
+                },
+                "catalog": {
+                    "items": [
+                        {
+                            "id": 1234567890,
+                            "urlPath": "/moskva/telefony/iphone_1234567890",
+                            "title": "Apple iPhone",
+                            "priceDetailed": {"value": 45_000},
+                            "addressDetailed": {"locationName": "Москва, Арбат"},
+                            "gallery": {
+                                "imageLargeUrl": "https://example.test/iphone.jpg"
+                            },
+                        }
+                    ]
+                },
+            }
+        },
+    }
+    html = (
+        '<script type="mime/invalid" data-mfe-state="true">'
+        f"{json.dumps(payload)}"
+        "</script>"
+    )
+
+    state = extract_page_state(html)
+    assert state is not None
+    assert state.context == "search-context-token"
+    assert state.api_params == {
+        "categoryId": "99",
+        "locationId": "637640",
+        "pmin": "10000",
+        "params[201]": "1059",
+    }
+    assert parse_search_html(html) == list(state.items)
+    assert state.items[0].location == "Москва, Арбат"
+    assert state.items[0].image_url == "https://example.test/iphone.jpg"
+
+
+def test_parse_internal_api_response_variants() -> None:
+    item = {
+        "id": "9876543210",
+        "urlPath": "/kazan/velosipedy/velosiped_9876543210",
+        "title": "Велосипед",
+        "priceDetailed": {"value": 12_500},
+        "location": {"name": "Казань"},
+    }
+
+    direct = parse_api_response({"catalog": {"items": [item]}})
+    nested = parse_api_response({"result": {"catalog": {"items": [item]}}})
+
+    assert direct == nested
+    assert [(result.id, result.price) for result in direct] == [("9876543210", 12_500)]
+
+
+def test_build_api_params_keeps_stable_search_context() -> None:
+    assert build_api_params(
+        {
+            "categoryId": 1,
+            "geoCoords": {"lat": 55.75, "lng": 37.62},
+            "withDeliveryOnly": True,
+            "searchRadius": 25,
+        }
+    ) == {
+        "categoryId": "1",
+        "geoCoords": '{"lat":55.75,"lng":37.62}',
+        "cd": "1",
+        "radius": "25",
+    }
+
+
+def test_hybrid_transport_uses_api_pages_until_result_limit(tmp_path, monkeypatch) -> None:
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="hybrid",
+            max_results=3,
+            avito_api_max_pages=4,
+        )
+    )
+    first = AvitoItem("1", "Первое", 100, "https://www.avito.ru/item_1000001")
+    state = AvitoPageState((first,), "context-token", {"categoryId": "1"})
+    requested_pages: list[int] = []
+    synchronized: list[object] = []
+    fake_session = object()
+
+    async def fake_get_session():
+        return fake_session
+
+    async def fake_sync(session):
+        synchronized.append(session)
+
+    async def fake_request(*, page_number, **_kwargs):
+        requested_pages.append(page_number)
+        return [
+            AvitoItem(
+                str(page_number),
+                f"Страница {page_number}",
+                page_number * 100,
+                f"https://www.avito.ru/item_{page_number}000000",
+            )
+        ]
+
+    monkeypatch.setattr(client, "_get_curl_session", fake_get_session)
+    monkeypatch.setattr(client, "_sync_browser_cookies_to_curl", fake_sync)
+    monkeypatch.setattr(client, "_request_api_page", fake_request)
+
+    items = asyncio.run(
+        client._extend_with_api_pages(
+            [first],
+            page_state=state,
+            search_url="https://www.avito.ru/moskva?q=test",
+        )
+    )
+
+    assert [item.id for item in items] == ["1", "2", "3"]
+    assert requested_pages == [2, 3]
+    assert synchronized == [fake_session]
 
 
 def test_parse_detects_ip_block() -> None:
@@ -247,3 +384,48 @@ def test_browser_continues_without_wait_or_reload_when_page_opened_normally(
     assert result == (200, ready_html, False)
     assert page.reload_count == 0
     assert delays == []
+
+
+def test_browser_starts_global_cooldown_after_repeated_reload_errors(
+    tmp_path, monkeypatch
+) -> None:
+    blocked_html = "<h2>Доступ ограничен: проблема с IP</h2>"
+    page = ReloadingPageStub([(429, blocked_html)] * 3)
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+            avito_page_reload_delay_seconds=90,
+            avito_error_reload_attempts=3,
+            avito_cooldown_seconds=10_800,
+        )
+    )
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    async def fake_diagnostic(*_args, **_kwargs):
+        return tmp_path / "blocked.png"
+
+    monkeypatch.setattr("avito_reminder.avito.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(client, "_save_browser_diagnostic", fake_diagnostic)
+
+    async def scenario() -> None:
+        with pytest.raises(AvitoBlockedError) as caught:
+            await client._wait_then_reload_avito_page(
+                page,  # type: ignore[arg-type]
+                status=403,
+                html=blocked_html,
+                page_name="главная страница",
+            )
+        assert caught.value.retry_after_seconds == 10_800
+        with pytest.raises(AvitoBlockedError) as cooldown:
+            client._raise_if_cooling_down()
+        assert cooldown.value.retry_after_seconds is not None
+        assert cooldown.value.retry_after_seconds > 10_700
+
+    asyncio.run(scenario())
+
+    assert page.reload_count == 3
+    assert delays == [90, 90, 90]
