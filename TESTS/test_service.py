@@ -20,7 +20,7 @@ class FakeBot:
 
 
 class FakeClient:
-    async def search(self, _: str) -> list[AvitoItem]:
+    async def search(self, _: str, **_kwargs: object) -> list[AvitoItem]:
         return [
             AvitoItem(
                 id="1234567890",
@@ -35,7 +35,7 @@ class BlockedClient:
     def __init__(self, diagnostic_path) -> None:
         self.diagnostic_path = diagnostic_path
 
-    async def search(self, _: str) -> list[AvitoItem]:
+    async def search(self, _: str, **_kwargs: object) -> list[AvitoItem]:
         raise AvitoBlockedError(
             "Chromium получил от Avito HTTP 403",
             diagnostic_path=self.diagnostic_path,

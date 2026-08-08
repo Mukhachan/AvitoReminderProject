@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -47,7 +48,12 @@ async def run() -> None:
         )
     finally:
         service.stop()
-        await worker
+        try:
+            await asyncio.wait_for(worker, timeout=5)
+        except TimeoutError:
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
         await client.close()
 
 

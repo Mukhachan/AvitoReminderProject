@@ -76,6 +76,7 @@ class Settings:
     avito_chromium_executable: str | None
     avito_min_request_interval_seconds: int
     avito_request_jitter_seconds: int
+    avito_page_reload_delay_seconds: int
     user_agent: str
     log_level: str
 
@@ -126,6 +127,7 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
         avito_chromium_executable=os.getenv("AVITO_CHROMIUM_EXECUTABLE") or None,
         avito_min_request_interval_seconds=_as_int("AVITO_MIN_REQUEST_INTERVAL_SECONDS", 60),
         avito_request_jitter_seconds=_as_int("AVITO_REQUEST_JITTER_SECONDS", 30, minimum=0),
+        avito_page_reload_delay_seconds=_as_int("AVITO_PAGE_RELOAD_DELAY_SECONDS", 90),
         user_agent=os.getenv(
             "AVITO_USER_AGENT",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

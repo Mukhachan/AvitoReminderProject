@@ -84,11 +84,14 @@ class MonitorService:
             return CheckResult(found=0, new=0, sent=0, error="Проверка уже выполняется")
         async with lock, self._semaphore:
             try:
-                items = await self.client.search(search.url)
+                async def notify_blocked(exc: AvitoBlockedError) -> None:
+                    await self._notify_avito_waiting(search, exc)
+
+                items = await self.client.search(search.url, on_blocked=notify_blocked)
                 should_notify = search.initialized or self.settings.notify_initial_results
                 new_count = await self.database.record_items(search.id, items, notify=should_notify)
                 sent = await self._send_pending(search)
-                await self.database.mark_success(search.id, self.settings.search_interval_seconds)
+                await self.database.mark_success(search.id, search.interval_seconds)
                 logger.info(
                     "Поиск #%s: найдено=%s новых=%s отправлено=%s",
                     search.id,
@@ -110,6 +113,36 @@ class MonitorService:
                 logger.exception("Неожиданная ошибка поиска #%s", search.id)
                 await self.database.mark_failure(search.id, str(exc), 300)
                 return CheckResult(0, 0, 0, "Внутренняя ошибка проверки")
+
+    async def _notify_avito_waiting(self, search: Search, exc: AvitoBlockedError) -> None:
+        text = (
+            f"⏳ <b>Поиск #{search.id}: Avito ограничил доступ.</b>\n"
+            "Chromium оставлен открытым. Обновление через "
+            f"{self.settings.avito_page_reload_delay_seconds} секунд."
+        )
+        try:
+            try:
+                await self.bot.send_message(search.chat_id, text)
+            except TelegramRetryAfter as retry:
+                await asyncio.sleep(retry.retry_after)
+                await self.bot.send_message(search.chat_id, text)
+
+            if exc.diagnostic_path is not None and exc.diagnostic_path.is_file():
+
+                async def send_screenshot() -> None:
+                    await self.bot.send_photo(
+                        chat_id=search.chat_id,
+                        photo=FSInputFile(exc.diagnostic_path),
+                        caption=f"📸 Avito при начале ожидания, поиск #{search.id}",
+                    )
+
+                try:
+                    await send_screenshot()
+                except TelegramRetryAfter as retry:
+                    await asyncio.sleep(retry.retry_after)
+                    await send_screenshot()
+        except TelegramForbiddenError:
+            await self.database.set_active(search.id, search.chat_id, False)
 
     async def _send_pending(self, search: Search) -> int:
         pending = await self.database.pending_items(

@@ -1,5 +1,6 @@
 import asyncio
 import json
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -34,8 +35,27 @@ class RouteStubClient(AvitoClient):
 
 
 class BrowserStubClient(AvitoClient):
-    async def _search_browser(self, url):
+    async def _search_browser(self, url, **_kwargs):
         return []
+
+
+class ReloadingPageStub:
+    def __init__(self, responses: list[tuple[int, str]]):
+        self.responses = responses
+        self.html = ""
+        self.url = "https://www.avito.ru/"
+        self.reload_count = 0
+
+    async def reload(self, **_kwargs):
+        status, self.html = self.responses.pop(0)
+        self.reload_count += 1
+        return SimpleNamespace(status=status)
+
+    async def content(self) -> str:
+        return self.html
+
+    def is_closed(self) -> bool:
+        return False
 
 
 def test_build_search_url_encodes_parameters() -> None:
@@ -151,3 +171,79 @@ def test_browser_transport_uses_direct_chromium_route(tmp_path) -> None:
 
     assert asyncio.run(client.search("https://www.avito.ru/moskva")) == []
     assert client.last_route == "chromium-direct"
+
+
+def test_browser_waits_and_reloads_until_avito_access_returns(tmp_path, monkeypatch) -> None:
+    blocked_html = "<h2>Доступ ограничен: проблема с IP</h2>"
+    ready_html = "<html><title>Avito</title><main>Главная</main></html>"
+    page = ReloadingPageStub([(429, blocked_html), (200, ready_html)])
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+            avito_page_reload_delay_seconds=90,
+        )
+    )
+    delays: list[float] = []
+    block_notifications: list[AvitoBlockedError] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    async def fake_diagnostic(*_args, **_kwargs):
+        return tmp_path / "blocked.png"
+
+    async def on_blocked(exc: AvitoBlockedError) -> None:
+        block_notifications.append(exc)
+
+    monkeypatch.setattr("avito_reminder.avito.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(client, "_save_browser_diagnostic", fake_diagnostic)
+
+    result = asyncio.run(
+        client._wait_then_reload_avito_page(
+            page,  # type: ignore[arg-type]
+            status=403,
+            html=blocked_html,
+            page_name="главная страница",
+            on_blocked=on_blocked,
+        )
+    )
+
+    assert result == (200, ready_html, True)
+    assert page.reload_count == 2
+    assert delays == [90, 90]
+    assert len(block_notifications) == 1
+    assert block_notifications[0].diagnostic_path == tmp_path / "blocked.png"
+
+
+def test_browser_waits_90_seconds_and_reloads_even_when_page_opened_normally(
+    tmp_path, monkeypatch
+) -> None:
+    ready_html = "<html><title>Avito</title><main>Главная</main></html>"
+    page = ReloadingPageStub([(200, ready_html)])
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+            avito_page_reload_delay_seconds=90,
+        )
+    )
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("avito_reminder.avito.asyncio.sleep", fake_sleep)
+
+    result = asyncio.run(
+        client._wait_then_reload_avito_page(
+            page,  # type: ignore[arg-type]
+            status=200,
+            html=ready_html,
+            page_name="главная страница",
+        )
+    )
+
+    assert result == (200, ready_html, False)
+    assert page.reload_count == 1
+    assert delays == [90]

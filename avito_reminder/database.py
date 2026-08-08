@@ -45,6 +45,7 @@ class Database:
                     city TEXT NOT NULL,
                     price_min INTEGER,
                     price_max INTEGER,
+                    interval_seconds INTEGER NOT NULL DEFAULT 900,
                     url TEXT NOT NULL,
                     active INTEGER NOT NULL DEFAULT 1,
                     initialized INTEGER NOT NULL DEFAULT 0,
@@ -78,6 +79,14 @@ class Database:
                     ON seen_items(search_id, notified, first_seen_at);
                 """
             )
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(searches)").fetchall()
+            }
+            if "interval_seconds" not in columns:
+                connection.execute("ALTER TABLE searches ADD COLUMN interval_seconds INTEGER")
+            connection.execute(
+                "UPDATE searches SET interval_seconds = 900 WHERE interval_seconds IS NULL"
+            )
 
     @staticmethod
     def _search(row: sqlite3.Row | None) -> Search | None:
@@ -91,6 +100,7 @@ class Database:
             city=row["city"],
             price_min=row["price_min"],
             price_max=row["price_max"],
+            interval_seconds=row["interval_seconds"],
             url=row["url"],
             active=bool(row["active"]),
             initialized=bool(row["initialized"]),
@@ -111,6 +121,7 @@ class Database:
         price_min: int | None,
         price_max: int | None,
         url: str,
+        interval_seconds: int = 900,
     ) -> Search:
         return await asyncio.to_thread(
             self._add_search,
@@ -121,6 +132,7 @@ class Database:
             price_min,
             price_max,
             url,
+            interval_seconds,
         )
 
     def _add_search(
@@ -132,17 +144,29 @@ class Database:
         price_min: int | None,
         price_max: int | None,
         url: str,
+        interval_seconds: int,
     ) -> Search:
         now = as_iso(utc_now())
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO searches (
-                    chat_id, user_id, query, city, price_min, price_max, url,
+                    chat_id, user_id, query, city, price_min, price_max, interval_seconds, url,
                     created_at, next_check_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (chat_id, user_id, query, city, price_min, price_max, url, now, now),
+                (
+                    chat_id,
+                    user_id,
+                    query,
+                    city,
+                    price_min,
+                    price_max,
+                    interval_seconds,
+                    url,
+                    now,
+                    now,
+                ),
             )
             row = connection.execute(
                 "SELECT * FROM searches WHERE id = ?", (cursor.lastrowid,)

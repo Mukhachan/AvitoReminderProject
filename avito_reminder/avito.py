@@ -6,11 +6,11 @@ import logging
 import random
 import re
 import shutil
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlencode, urljoin, urlparse, urlsplit
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlsplit
 
 import aiohttp
 from aiohttp_socks import ProxyConnector
@@ -34,6 +34,34 @@ from .models import AvitoItem
 logger = logging.getLogger(__name__)
 
 AVITO_BASE_URL = "https://www.avito.ru"
+AVITO_BLOCK_HTTP_STATUSES = frozenset({401, 403, 429})
+AVITO_BLOCK_MARKERS = (
+    "доступ ограничен: проблема с ip",
+    "продолжить для решения капчи",
+    'data-marker="captcha"',
+    "captcha challenge",
+    "too many requests",
+)
+
+
+def _is_blocked_html(html: str) -> bool:
+    lowered = html.lower()
+    return any(marker in lowered for marker in AVITO_BLOCK_MARKERS)
+
+
+def _is_blocked_page(status: int | None, html: str) -> bool:
+    return status in AVITO_BLOCK_HTTP_STATUSES or _is_blocked_html(html)
+
+
+def _is_avito_url(url: str) -> bool:
+    hostname = (urlsplit(url).hostname or "").lower()
+    return hostname == "avito.ru" or hostname.endswith(".avito.ru")
+
+
+def _has_target_search_query(current_url: str, target_url: str) -> bool:
+    current_query = parse_qs(urlsplit(current_url).query).get("q")
+    target_query = parse_qs(urlsplit(target_url).query).get("q")
+    return bool(target_query and current_query == target_query)
 
 
 def resolve_chromium_executable(settings: Settings) -> str | None:
@@ -65,6 +93,9 @@ class AvitoBlockedError(AvitoError):
 
 class AvitoParseError(AvitoError):
     """The response did not contain a supported search result format."""
+
+
+BlockedCallback = Callable[[AvitoBlockedError], Awaitable[None]]
 
 
 _CITY_ALIASES = {
@@ -291,15 +322,7 @@ def _parse_json_ld(soup: BeautifulSoup) -> list[AvitoItem]:
 
 
 def parse_search_html(html: str) -> list[AvitoItem]:
-    lowered = html.lower()
-    block_markers = (
-        "доступ ограничен: проблема с ip",
-        "продолжить для решения капчи",
-        'data-marker="captcha"',
-        "captcha challenge",
-        "too many requests",
-    )
-    if any(marker in lowered for marker in block_markers):
+    if _is_blocked_html(html):
         raise AvitoBlockedError("Avito ограничил доступ с текущего IP или запросил капчу")
 
     soup = BeautifulSoup(html, "html.parser")
@@ -422,10 +445,15 @@ class AvitoClient:
             self._proxy_session = aiohttp.ClientSession(timeout=timeout, raise_for_status=False)
         return self._proxy_session, proxy_url
 
-    async def search(self, url: str) -> list[AvitoItem]:
+    async def search(
+        self,
+        url: str,
+        *,
+        on_blocked: BlockedCallback | None = None,
+    ) -> list[AvitoItem]:
         if self._settings.avito_transport == "browser":
             self.last_route = "chromium-direct"
-            return await self._search_browser(url)
+            return await self._search_browser(url, on_blocked=on_blocked)
 
         headers = {
             "User-Agent": self._settings.user_agent,
@@ -461,7 +489,12 @@ class AvitoClient:
             raise AvitoBlockedError(combined_error)
         raise AvitoNetworkError(combined_error)
 
-    async def _search_browser(self, url: str) -> list[AvitoItem]:
+    async def _search_browser(
+        self,
+        url: str,
+        *,
+        on_blocked: BlockedCallback | None = None,
+    ) -> list[AvitoItem]:
         async with self._browser_lock:
             await self._wait_for_browser_slot()
             await self._start_browser()
@@ -473,31 +506,34 @@ class AvitoClient:
                 page = await self._browser_context.new_page()
                 try:
                     if not self._browser_warmed_up:
-                        home_status = await self._open_avito_home(page)
-                        if home_status in {401, 403, 429}:
-                            diagnostic_path = await self._save_browser_diagnostic(page, home_status)
-                            raise AvitoBlockedError(
-                                f"Главная страница Avito вернула HTTP {home_status}",
-                                diagnostic_path=diagnostic_path,
-                            )
+                        home_status, _, _ = await self._open_avito_home(
+                            page,
+                            on_blocked=on_blocked,
+                        )
                         if home_status is not None and home_status >= 400:
                             raise AvitoNetworkError(
                                 f"Главная страница Avito вернула HTTP {home_status}"
                             )
                         self._browser_warmed_up = True
 
-                    response = await page.goto(
+                    status, html, _ = await self._navigate_avito_page(
+                        page,
                         url,
-                        wait_until="domcontentloaded",
-                        timeout=self._settings.request_timeout_seconds * 1000,
+                        page_name="страница поиска",
                         referer=f"{AVITO_BASE_URL}/",
+                        on_blocked=on_blocked,
                     )
-                    status = response.status if response is not None else None
-                    if status in {401, 403, 429}:
-                        diagnostic_path = await self._save_browser_diagnostic(page, status)
+                    if not _has_target_search_query(page.url, url):
+                        status, html, _ = await self._navigate_avito_page(
+                            page,
+                            url,
+                            page_name="страница поиска после главной",
+                            referer=f"{AVITO_BASE_URL}/",
+                            on_blocked=on_blocked,
+                        )
+                    if status in AVITO_BLOCK_HTTP_STATUSES:
                         raise AvitoBlockedError(
-                            f"Chromium получил от Avito HTTP {status}",
-                            diagnostic_path=diagnostic_path,
+                            f"Chromium получил от Avito HTTP {status}"
                         )
                     if status is not None and status >= 500:
                         raise AvitoNetworkError(f"Chromium получил от Avito HTTP {status}")
@@ -510,7 +546,6 @@ class AvitoClient:
                             state="attached",
                             timeout=min(8_000, self._settings.request_timeout_seconds * 1000),
                         )
-                    html = await page.content()
                     try:
                         return parse_search_html(html)[: self._settings.max_results]
                     except (AvitoBlockedError, AvitoParseError) as exc:
@@ -548,29 +583,140 @@ class AvitoClient:
                 await asyncio.sleep(remaining)
         self._last_browser_request_at = loop.time()
 
-    async def _open_avito_home(self, page: Page) -> int | None:
+    async def _navigate_avito_page(
+        self,
+        page: Page,
+        url: str,
+        *,
+        page_name: str,
+        referer: str | None = None,
+        on_blocked: BlockedCallback | None = None,
+    ) -> tuple[int | None, str, bool]:
         response = await page.goto(
-            f"{AVITO_BASE_URL}/",
+            url,
             wait_until="domcontentloaded",
             timeout=self._settings.request_timeout_seconds * 1000,
+            referer=referer,
         )
         status = response.status if response is not None else None
-        logger.info("Главная страница Avito открыта через Chromium: HTTP %s", status)
-        return status
+        html = await page.content()
+        logger.info("Avito: %s открыта, HTTP %s", page_name, status)
+        return await self._wait_then_reload_avito_page(
+            page,
+            status=status,
+            html=html,
+            page_name=page_name,
+            on_blocked=on_blocked,
+        )
+
+    async def _wait_then_reload_avito_page(
+        self,
+        page: Page,
+        *,
+        status: int | None,
+        html: str,
+        page_name: str,
+        on_blocked: BlockedCallback | None = None,
+    ) -> tuple[int | None, str, bool]:
+        """Wait before the first reload and repeat while Avito is not ready."""
+        diagnostic_path: Path | None = None
+        block_notified = False
+        reload_number = 0
+        while True:
+            if _is_blocked_page(status, html) and not block_notified:
+                diagnostic_path = await self._save_browser_diagnostic(page, status)
+                logger.warning(
+                    "Avito ограничил доступ (%s, HTTP %s). "
+                    "Вкладка останется открытой. Первый снимок: %s",
+                    page_name,
+                    status,
+                    diagnostic_path or "не сохранён",
+                )
+                block_notified = True
+                if on_blocked is not None:
+                    blocked_error = AvitoBlockedError(
+                        f"Avito ограничил доступ: {page_name}, HTTP {status}",
+                        diagnostic_path=diagnostic_path,
+                    )
+                    try:
+                        await on_blocked(blocked_error)
+                    except Exception:
+                        logger.exception(
+                            "Не удалось отправить уведомление о блокировке Avito"
+                        )
+
+            reload_number += 1
+            delay = self._settings.avito_page_reload_delay_seconds
+            logger.info(
+                "Avito: %s; обязательное обновление %s через %s с",
+                page_name,
+                reload_number,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            if page.is_closed():
+                raise AvitoNetworkError(
+                    "Вкладка Avito была закрыта во время ожидания обновления",
+                    diagnostic_path=diagnostic_path,
+                )
+            try:
+                response = await page.reload(
+                    wait_until="domcontentloaded",
+                    timeout=self._settings.request_timeout_seconds * 1000,
+                )
+                status = response.status if response is not None else None
+                html = await page.content()
+            except (PlaywrightTimeoutError, PlaywrightError) as exc:
+                logger.warning("Не удалось обновить Avito: %s", exc)
+                status = None
+                continue
+
+            if (
+                _is_blocked_page(status, html)
+                or status is None
+                or status >= 400
+                or not _is_avito_url(page.url)
+            ):
+                logger.warning(
+                    "Avito пока не готов: HTTP %s, URL %s",
+                    status,
+                    page.url,
+                )
+                continue
+
+            logger.info(
+                "Avito: %s готова после ожидания и %s обновлений, HTTP %s",
+                page_name,
+                reload_number,
+                status,
+            )
+            return status, html, block_notified
+
+    async def _open_avito_home(
+        self,
+        page: Page,
+        *,
+        on_blocked: BlockedCallback | None = None,
+    ) -> tuple[int | None, str, bool]:
+        return await self._navigate_avito_page(
+            page,
+            f"{AVITO_BASE_URL}/",
+            page_name="главная страница",
+            on_blocked=on_blocked,
+        )
 
     async def open_manual_verification_page(self, url: str) -> tuple[Page, int | None, int | None]:
         """Open Avito in the persistent profile for a user-completed verification."""
         await self._start_browser()
         assert self._browser_context is not None
         page = await self._browser_context.new_page()
-        home_status = await self._open_avito_home(page)
-        response = await page.goto(
+        home_status, _, _ = await self._open_avito_home(page)
+        search_status, _, _ = await self._navigate_avito_page(
+            page,
             url,
-            wait_until="domcontentloaded",
-            timeout=self._settings.request_timeout_seconds * 1000,
+            page_name="страница поиска",
             referer=f"{AVITO_BASE_URL}/",
         )
-        search_status = response.status if response is not None else None
         return page, home_status, search_status
 
     async def _save_browser_diagnostic(self, page: Page, status: int | None) -> Path | None:

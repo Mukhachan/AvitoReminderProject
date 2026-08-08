@@ -12,6 +12,7 @@ class Search:
     city: str
     price_min: int | None
     price_max: int | None
+    interval_seconds: int
     url: str
     active: bool
     initialized: bool

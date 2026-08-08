@@ -26,6 +26,7 @@ def settings(database_path: Path, **overrides: object) -> Settings:
         "avito_chromium_executable": None,
         "avito_min_request_interval_seconds": 1,
         "avito_request_jitter_seconds": 0,
+        "avito_page_reload_delay_seconds": 90,
         "user_agent": "test-agent",
         "log_level": "WARNING",
     }
