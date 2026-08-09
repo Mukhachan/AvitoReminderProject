@@ -611,11 +611,10 @@ def test_browser_starts_global_cooldown_after_repeated_reload_errors(
     assert delays == [90, 90, 90]
 
 
-def test_browser_requests_proxy_rotation_before_global_cooldown(
-    tmp_path, monkeypatch
-) -> None:
+def test_hard_ip_block_requests_immediate_proxy_rotation(tmp_path, monkeypatch) -> None:
     blocked_html = "<h2>Доступ ограничен: проблема с IP</h2>"
-    page = ReloadingPageStub([(429, blocked_html)])
+    page = ReloadingPageStub([])
+    page.url = "https://www.avito.ru/#block"
     client = AvitoClient(
         settings(
             tmp_path / "test.db",
@@ -628,31 +627,34 @@ def test_browser_requests_proxy_rotation_before_global_cooldown(
         )
     )
     delays: list[float] = []
+    notifications: list[AvitoBlockedError] = []
 
     async def fake_sleep(delay: float) -> None:
         delays.append(delay)
 
-    async def fake_diagnostic(*_args, **_kwargs):
-        return tmp_path / "blocked.png"
+    async def on_blocked(exc: AvitoBlockedError) -> None:
+        notifications.append(exc)
 
     monkeypatch.setattr("avito_reminder.avito.asyncio.sleep", fake_sleep)
-    monkeypatch.setattr(client, "_save_browser_diagnostic", fake_diagnostic)
 
     async def scenario() -> None:
         with pytest.raises(_AvitoProxyRotationRequired) as caught:
             await client._wait_then_reload_avito_page(
                 page,  # type: ignore[arg-type]
-                status=403,
+                status=200,
                 html=blocked_html,
                 page_name="главная страница",
+                on_blocked=on_blocked,
             )
         assert caught.value.retry_after_seconds is None
         assert client._cooldown_until is None
 
     asyncio.run(scenario())
 
-    assert page.reload_count == 1
-    assert delays == [90]
+    assert page.reload_count == 0
+    assert delays == []
+    assert len(notifications) == 1
+    assert notifications[0].retry_after_seconds == 0
 
 
 def test_proxy_rotation_recreates_network_on_next_endpoint(tmp_path, monkeypatch) -> None:

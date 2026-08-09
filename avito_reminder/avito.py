@@ -64,6 +64,13 @@ def _is_blocked_page(status: int | None, html: str) -> bool:
     return status in AVITO_BLOCK_HTTP_STATUSES or _is_blocked_html(html)
 
 
+def _is_hard_ip_block_page(html: str, url: str) -> bool:
+    return (
+        urlsplit(url).fragment.lower() == "block"
+        or "доступ ограничен: проблема с ip" in html.lower()
+    )
+
+
 def _is_avito_url(url: str) -> bool:
     hostname = (urlsplit(url).hostname or "").lower()
     return hostname == "avito.ru" or hostname.endswith(".avito.ru")
@@ -1147,6 +1154,31 @@ class AvitoClient:
         if _is_avito_page_ready(status, html, page.url):
             logger.info("Avito: %s успешно загружена без ожидания", page_name)
             return status, html, False
+
+        if (
+            _is_hard_ip_block_page(html, page.url)
+            and self._proxy_rotation_available()
+        ):
+            logger.warning(
+                "Avito показал жёсткую блокировку IP (%s, URL %s); "
+                "переключаю IP немедленно, без ожидания и reload",
+                page_name,
+                page.url,
+            )
+            blocked_error = AvitoBlockedError(
+                f"Avito заблокировал текущий IP: {page_name}",
+                retry_after_seconds=0,
+            )
+            if on_blocked is not None:
+                try:
+                    await on_blocked(blocked_error)
+                except Exception:
+                    logger.exception(
+                        "Не удалось отправить уведомление о немедленной смене IP Avito"
+                    )
+            raise _AvitoProxyRotationRequired(
+                "Avito показал страницу #block; требуется немедленная смена IP"
+            )
 
         diagnostic_path: Path | None = None
         block_notified = False
