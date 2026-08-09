@@ -115,10 +115,23 @@ class MonitorService:
                 return CheckResult(0, 0, 0, "Внутренняя ошибка проверки")
 
     async def _notify_avito_waiting(self, search: Search, _exc: AvitoBlockedError) -> None:
+        rotation_enabled = (
+            self.settings.avito_proxy_mode != "direct"
+            and self.settings.avito_proxy_rotation_enabled
+            and bool(
+                self.settings.avito_proxy_pool
+                or self.settings.avito_proxy_change_url
+            )
+        )
+        next_action = (
+            "Если блокировка останется, парсер автоматически сменит IP."
+            if rotation_enabled
+            else "Chromium останется открытым для повторной загрузки."
+        )
         text = (
             f"⏳ <b>Поиск #{search.id}: Avito ограничил доступ.</b>\n"
-            "Chromium оставлен открытым. Обновление через "
-            f"{self.settings.avito_page_reload_delay_seconds} секунд."
+            f"Обновление через {self.settings.avito_page_reload_delay_seconds} секунд. "
+            f"{next_action}"
         )
         try:
             try:

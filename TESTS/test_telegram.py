@@ -1,4 +1,7 @@
+import asyncio
+
 import pytest
+from aiogram.exceptions import TelegramBadRequest
 
 from avito_reminder.models import Search
 from avito_reminder.telegram import (
@@ -6,6 +9,7 @@ from avito_reminder.telegram import (
     _format_interval,
     _parse_interval,
     _parse_price,
+    _safe_edit_text,
     _search_keyboard,
     _search_text,
 )
@@ -83,3 +87,18 @@ def test_confirmation_text_summarizes_all_answers() -> None:
     assert "Велосипед" in text
     assert "от 10 000" in text
     assert _format_interval(3600) in text
+
+
+def test_safe_edit_ignores_unchanged_telegram_message() -> None:
+    class UnchangedMessage:
+        async def edit_text(self, *_args, **_kwargs):
+            raise TelegramBadRequest(method=None, message="message is not modified")
+
+    changed = asyncio.run(
+        _safe_edit_text(  # type: ignore[arg-type]
+            UnchangedMessage(),
+            "Без изменений",
+        )
+    )
+
+    assert changed is False

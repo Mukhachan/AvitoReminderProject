@@ -11,6 +11,9 @@ from avito_reminder.avito import (
     AvitoError,
     AvitoNetworkError,
     AvitoParseError,
+    _AvitoProxyPool,
+    _AvitoProxyRotationRequired,
+    _playwright_proxy,
     build_search_url,
     city_slug,
     parse_search_html,
@@ -298,6 +301,34 @@ def test_avito_fallback_preserves_blocked_error(tmp_path) -> None:
     assert client.calls == [False, True]
 
 
+def test_proxy_pool_starts_direct_and_rotates_sticky_endpoints(tmp_path) -> None:
+    first = "http://user:password@first.proxy.test:1000"
+    second = "http://user:password@second.proxy.test:1000"
+    pool = _AvitoProxyPool(
+        settings(
+            tmp_path / "test.db",
+            avito_proxy_mode="fallback",
+            avito_proxy_pool=(first, second),
+            avito_proxy_rotation_enabled=True,
+        )
+    )
+
+    assert pool.current is None
+    assert pool.rotate() == first
+    assert pool.rotate() == second
+    assert pool.rotate() == first
+
+
+def test_playwright_proxy_keeps_credentials_out_of_server_url() -> None:
+    assert _playwright_proxy(
+        "http://user%40account:password%3Avalue@proxy.example.test:1000"
+    ) == {
+        "server": "http://proxy.example.test:1000",
+        "username": "user@account",
+        "password": "password:value",
+    }
+
+
 def test_browser_transport_uses_direct_chromium_route(tmp_path) -> None:
     client = BrowserStubClient(
         settings(
@@ -429,3 +460,78 @@ def test_browser_starts_global_cooldown_after_repeated_reload_errors(
 
     assert page.reload_count == 3
     assert delays == [90, 90, 90]
+
+
+def test_browser_requests_proxy_rotation_before_global_cooldown(
+    tmp_path, monkeypatch
+) -> None:
+    blocked_html = "<h2>Доступ ограничен: проблема с IP</h2>"
+    page = ReloadingPageStub([(429, blocked_html)])
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="hybrid",
+            avito_proxy_mode="fallback",
+            avito_proxy_pool=("http://user:password@proxy.example.test:1000",),
+            avito_proxy_rotation_enabled=True,
+            avito_proxy_rotate_after_reloads=1,
+            avito_page_reload_delay_seconds=90,
+        )
+    )
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    async def fake_diagnostic(*_args, **_kwargs):
+        return tmp_path / "blocked.png"
+
+    monkeypatch.setattr("avito_reminder.avito.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(client, "_save_browser_diagnostic", fake_diagnostic)
+
+    async def scenario() -> None:
+        with pytest.raises(_AvitoProxyRotationRequired) as caught:
+            await client._wait_then_reload_avito_page(
+                page,  # type: ignore[arg-type]
+                status=403,
+                html=blocked_html,
+                page_name="главная страница",
+            )
+        assert caught.value.retry_after_seconds is None
+        assert client._cooldown_until is None
+
+    asyncio.run(scenario())
+
+    assert page.reload_count == 1
+    assert delays == [90]
+
+
+def test_proxy_rotation_recreates_network_on_next_endpoint(tmp_path, monkeypatch) -> None:
+    first = "http://user:password@first.proxy.test:1000"
+    second = "http://user:password@second.proxy.test:1000"
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="hybrid",
+            avito_proxy_mode="proxy",
+            avito_proxy_pool=(first, second),
+            avito_proxy_rotation_enabled=True,
+            avito_proxy_rotation_delay_seconds=0,
+        )
+    )
+    events: list[str] = []
+
+    async def fake_close_network() -> None:
+        events.append("closed")
+
+    async def fake_change_url() -> None:
+        events.append("change-url")
+
+    monkeypatch.setattr(client, "_close_browser_network", fake_close_network)
+    monkeypatch.setattr(client, "_call_proxy_change_url", fake_change_url)
+
+    asyncio.run(client._rotate_avito_proxy(1))
+
+    assert events == ["closed", "change-url"]
+    assert client._avito_proxies.current == second
+    assert client.last_route == "chromium+curl-proxy"

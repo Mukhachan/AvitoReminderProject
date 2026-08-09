@@ -31,6 +31,10 @@ def _proxy_url(name: str) -> str | None:
     raw = os.getenv(name, "").strip()
     if not raw:
         return None
+    return _validate_proxy_url(name, raw)
+
+
+def _validate_proxy_url(name: str, raw: str) -> str:
     try:
         parsed = urlsplit(raw)
         port = parsed.port
@@ -42,6 +46,36 @@ def _proxy_url(name: str) -> str | None:
         raise ValueError(f"{name}: укажите хост и порт прокси")
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
         raise ValueError(f"{name}: path, query и fragment не поддерживаются")
+    return raw
+
+
+def _proxy_pool(path: Path | None, primary_proxy: str | None) -> tuple[str, ...]:
+    proxies: list[str] = []
+    if primary_proxy:
+        proxies.append(primary_proxy)
+    if path is not None:
+        if not path.is_file():
+            raise ValueError(f"AVITO_PROXY_POOL_FILE: файл не найден: {path}")
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            value = line.strip()
+            if not value or value.startswith("#"):
+                continue
+            proxy = _validate_proxy_url(
+                f"AVITO_PROXY_POOL_FILE, строка {line_number}",
+                value,
+            )
+            if proxy not in proxies:
+                proxies.append(proxy)
+    return tuple(proxies)
+
+
+def _http_url(name: str) -> str | None:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    parsed = urlsplit(raw)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"{name}: ожидается полный http/https URL")
     return raw
 
 
@@ -68,8 +102,14 @@ class Settings:
     telegram_proxy_rdns: bool
     avito_cookie: str | None
     http_proxy: str | None
+    avito_proxy_pool: tuple[str, ...]
+    avito_proxy_change_url: str | None
     avito_proxy_mode: str
     avito_proxy_rdns: bool
+    avito_proxy_rotation_enabled: bool
+    avito_proxy_rotate_after_reloads: int
+    avito_proxy_rotation_delay_seconds: int
+    avito_proxy_max_rotations: int
     avito_transport: str
     avito_http_impersonate: str
     avito_api_max_pages: int
@@ -96,13 +136,19 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
 
     database_path = Path(os.getenv("DATABASE_PATH", "data/avito_reminder.db"))
     avito_proxy = _proxy_url("AVITO_PROXY") or _proxy_url("AVITO_HTTP_PROXY")
+    raw_pool_path = os.getenv("AVITO_PROXY_POOL_FILE", "").strip()
+    proxy_pool_path = Path(raw_pool_path) if raw_pool_path else None
+    avito_proxy_pool = _proxy_pool(proxy_pool_path, avito_proxy)
+    avito_proxy_change_url = _http_url("AVITO_PROXY_CHANGE_URL")
     avito_proxy_mode = _choice(
         "AVITO_PROXY_MODE",
-        "fallback" if avito_proxy else "direct",
+        "fallback" if avito_proxy_pool or avito_proxy_change_url else "direct",
         {"direct", "proxy", "fallback"},
     )
-    if avito_proxy_mode == "proxy" and not avito_proxy:
-        raise ValueError("AVITO_PROXY_MODE=proxy требует заполненный AVITO_PROXY")
+    if avito_proxy_mode == "proxy" and not avito_proxy_pool:
+        raise ValueError(
+            "AVITO_PROXY_MODE=proxy требует AVITO_PROXY или AVITO_PROXY_POOL_FILE"
+        )
     return Settings(
         bot_token=token,
         database_path=database_path,
@@ -117,8 +163,22 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
         telegram_proxy_rdns=_as_bool(os.getenv("TELEGRAM_PROXY_RDNS"), True),
         avito_cookie=os.getenv("AVITO_COOKIE") or None,
         http_proxy=avito_proxy,
+        avito_proxy_pool=avito_proxy_pool,
+        avito_proxy_change_url=avito_proxy_change_url,
         avito_proxy_mode=avito_proxy_mode,
         avito_proxy_rdns=_as_bool(os.getenv("AVITO_PROXY_RDNS"), True),
+        avito_proxy_rotation_enabled=_as_bool(
+            os.getenv("AVITO_PROXY_ROTATION_ENABLED"),
+            bool(avito_proxy_pool or avito_proxy_change_url),
+        ),
+        avito_proxy_rotate_after_reloads=_as_int(
+            "AVITO_PROXY_ROTATE_AFTER_RELOADS", 1
+        ),
+        avito_proxy_rotation_delay_seconds=_as_int(
+            "AVITO_PROXY_ROTATION_DELAY_SECONDS", 15,
+            minimum=0,
+        ),
+        avito_proxy_max_rotations=_as_int("AVITO_PROXY_MAX_ROTATIONS", 5),
         avito_transport=_choice(
             "AVITO_TRANSPORT",
             "hybrid",

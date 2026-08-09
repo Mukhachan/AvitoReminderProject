@@ -50,6 +50,38 @@ def test_settings_reject_invalid_proxy(monkeypatch) -> None:
         load_settings()
 
 
+def test_settings_load_avito_proxy_pool_and_rotation(monkeypatch, tmp_path) -> None:
+    pool_path = tmp_path / "avito-proxies.txt"
+    pool_path.write_text(
+        "# Один sticky IP на строку\n"
+        "http://user:password@first.proxy.test:1000\n"
+        "http://user:password@second.proxy.test:1000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
+    monkeypatch.setenv("AVITO_PROXY", "")
+    monkeypatch.setenv("AVITO_HTTP_PROXY", "")
+    monkeypatch.setenv("AVITO_PROXY_MODE", "fallback")
+    monkeypatch.setenv("AVITO_PROXY_POOL_FILE", str(pool_path))
+    monkeypatch.setenv("AVITO_PROXY_CHANGE_URL", "https://rotate.example.test/key")
+    monkeypatch.setenv("AVITO_PROXY_ROTATION_ENABLED", "true")
+    monkeypatch.setenv("AVITO_PROXY_ROTATE_AFTER_RELOADS", "2")
+    monkeypatch.setenv("AVITO_PROXY_ROTATION_DELAY_SECONDS", "7")
+    monkeypatch.setenv("AVITO_PROXY_MAX_ROTATIONS", "4")
+
+    settings = load_settings()
+
+    assert settings.avito_proxy_pool == (
+        "http://user:password@first.proxy.test:1000",
+        "http://user:password@second.proxy.test:1000",
+    )
+    assert settings.avito_proxy_change_url == "https://rotate.example.test/key"
+    assert settings.avito_proxy_rotation_enabled is True
+    assert settings.avito_proxy_rotate_after_reloads == 2
+    assert settings.avito_proxy_rotation_delay_seconds == 7
+    assert settings.avito_proxy_max_rotations == 4
+
+
 def test_telegram_transport_applies_rdns(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
     monkeypatch.setenv("TELEGRAM_PROXY", "socks5://127.0.0.1:20808")

@@ -1,0 +1,6 @@
+# Скопируйте файл в data/avito_proxies.txt и замените примеры данными провайдера.
+# Одна sticky-сессия (стабильный IP) на строку. Реальный файл data/ игнорируется Git.
+# Поддерживаемые схемы: http, https, socks4, socks5.
+
+http://username:password@first.proxy.example:1000
+http://username:password@second.proxy.example:1000

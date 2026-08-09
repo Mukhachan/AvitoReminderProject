@@ -4,6 +4,7 @@ import html
 import re
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -186,6 +187,22 @@ def _search_keyboard(search: Search) -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+async def _safe_edit_text(
+    message: Message,
+    text: str,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> bool:
+    """Ignore Telegram's harmless error when a card already has the requested content."""
+    try:
+        await message.edit_text(text, reply_markup=reply_markup)
+        return True
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
+        return False
 
 
 def _delete_keyboard(search_id: int) -> InlineKeyboardMarkup:
@@ -690,7 +707,8 @@ async def search_callback(
         await progress.edit_text(_result_text(result))
         updated = await database.get_search(search_id, chat_id)
         if updated:
-            await callback.message.edit_text(
+            await _safe_edit_text(
+                callback.message,
                 _search_text(updated),
                 reply_markup=_search_keyboard(updated),
             )
@@ -700,7 +718,8 @@ async def search_callback(
         await callback.answer("Поиск возобновлён" if active else "Поиск приостановлен")
         updated = await database.get_search(search_id, chat_id)
         if updated:
-            await callback.message.edit_text(
+            await _safe_edit_text(
+                callback.message,
                 _search_text(updated),
                 reply_markup=_search_keyboard(updated),
             )
