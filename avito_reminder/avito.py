@@ -374,7 +374,11 @@ class _AvitoProxyPool:
     def __init__(self, settings: Settings):
         self._mode = settings.avito_proxy_mode
         self._proxies = settings.avito_proxy_pool
-        self._index = 0 if self._mode == "proxy" and self._proxies else -1
+        self._index = (
+            random.randrange(len(self._proxies))
+            if self._mode == "proxy" and self._proxies
+            else -1
+        )
 
     @property
     def current(self) -> str | None:
@@ -619,6 +623,21 @@ class AvitoClient:
                     rotations += 1
                     await self._rotate_avito_proxy(rotations)
 
+    async def _acquire_browser_page(self) -> Page:
+        """Reuse Chromium's startup tab and remove duplicate about:blank tabs."""
+        assert self._browser_context is not None
+        blank_pages = [
+            page
+            for page in self._browser_context.pages
+            if not page.is_closed() and page.url in {"", "about:blank"}
+        ]
+        if blank_pages:
+            page = blank_pages[0]
+            for duplicate in blank_pages[1:]:
+                await duplicate.close()
+            return page
+        return await self._browser_context.new_page()
+
     async def _search_browser_with_current_proxy(
         self,
         url: str,
@@ -630,7 +649,7 @@ class AvitoClient:
         last_diagnostic_path: Path | None = None
 
         for attempt in range(1, self._settings.request_retries + 1):
-            page = await self._browser_context.new_page()
+            page = await self._acquire_browser_page()
             try:
                 if not self._browser_warmed_up:
                     home_status, _, _ = await self._open_avito_home(
@@ -689,6 +708,19 @@ class AvitoClient:
                 raise
             except (PlaywrightTimeoutError, PlaywrightError, AvitoNetworkError) as exc:
                 last_error = exc
+                if (
+                    page.url in {"", "about:blank"}
+                    and self._avito_proxies.current is not None
+                    and self._proxy_rotation_available()
+                ):
+                    logger.warning(
+                        "Прокси не смог открыть Avito: вкладка осталась about:blank; "
+                        "переключаю IP без создания снимка"
+                    )
+                    raise _AvitoProxyRotationRequired(
+                        "Прокси не открыл Avito, вкладка осталась about:blank; "
+                        "требуется сменить IP"
+                    ) from exc
                 last_diagnostic_path = await self._save_browser_diagnostic(page, None)
                 if attempt < self._settings.request_retries:
                     delay = min(8.0, 2 ** (attempt - 1)) + random.uniform(0, 0.5)
@@ -1114,7 +1146,7 @@ class AvitoClient:
         """Open Avito in the persistent profile for a user-completed verification."""
         await self._start_browser()
         assert self._browser_context is not None
-        page = await self._browser_context.new_page()
+        page = await self._acquire_browser_page()
         home_status, _, _ = await self._open_avito_home(page)
         search_status, _, _ = await self._navigate_avito_page(
             page,
@@ -1125,12 +1157,19 @@ class AvitoClient:
         return page, home_status, search_status
 
     async def _save_browser_diagnostic(self, page: Page, status: int | None) -> Path | None:
+        if page.url in {"", "about:blank"}:
+            logger.warning("Снимок Avito пропущен: вкладка осталась about:blank")
+            return None
         diagnostic_dir = self._settings.database_path.parent / "diagnostics"
         diagnostic_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         screenshot_path = diagnostic_dir / f"avito-{status or 'unknown'}-{timestamp}.png"
         try:
-            await page.screenshot(path=str(screenshot_path), full_page=False)
+            await page.screenshot(
+                path=str(screenshot_path),
+                full_page=False,
+                timeout=min(5_000, self._settings.request_timeout_seconds * 1000),
+            )
             logger.warning("Диагностический снимок Avito сохранён: %s", screenshot_path)
             return screenshot_path
         except PlaywrightError as exc:

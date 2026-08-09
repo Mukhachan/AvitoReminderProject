@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from avito_reminder.avito import (
     AvitoBlockedError,
@@ -66,6 +67,25 @@ class ReloadingPageStub:
 
     def is_closed(self) -> bool:
         return False
+
+
+class BlankTimeoutPageStub:
+    def __init__(self) -> None:
+        self.url = "about:blank"
+        self.closed = False
+        self.screenshot_calls = 0
+
+    async def goto(self, *_args, **_kwargs):
+        raise PlaywrightTimeoutError("navigation timeout")
+
+    async def screenshot(self, **_kwargs) -> None:
+        self.screenshot_calls += 1
+
+    async def close(self) -> None:
+        self.closed = True
+
+    def is_closed(self) -> bool:
+        return self.closed
 
 
 def test_build_search_url_encodes_parameters() -> None:
@@ -319,9 +339,12 @@ def test_proxy_pool_starts_direct_and_rotates_sticky_endpoints(tmp_path) -> None
     assert pool.rotate() == first
 
 
-def test_proxy_mode_starts_immediately_on_first_pool_endpoint(tmp_path) -> None:
+def test_proxy_mode_starts_immediately_on_random_pool_endpoint(
+    tmp_path, monkeypatch
+) -> None:
     first = "http://user:password@first.proxy.test:1000"
     second = "http://user:password@second.proxy.test:1000"
+    monkeypatch.setattr("avito_reminder.avito.random.randrange", lambda _size: 1)
     pool = _AvitoProxyPool(
         settings(
             tmp_path / "test.db",
@@ -331,8 +354,8 @@ def test_proxy_mode_starts_immediately_on_first_pool_endpoint(tmp_path) -> None:
         )
     )
 
-    assert pool.current == first
-    assert pool.rotate() == second
+    assert pool.current == second
+    assert pool.rotate() == first
 
 
 def test_playwright_proxy_keeps_credentials_out_of_server_url() -> None:
@@ -551,3 +574,27 @@ def test_proxy_rotation_recreates_network_on_next_endpoint(tmp_path, monkeypatch
     assert events == ["closed", "change-url"]
     assert client._avito_proxies.current == second
     assert client.last_route == "chromium+curl-proxy"
+
+
+def test_proxy_timeout_on_about_blank_rotates_without_screenshot(tmp_path) -> None:
+    page = BlankTimeoutPageStub()
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="hybrid",
+            avito_proxy_mode="proxy",
+            avito_proxy_pool=("http://user:password@proxy.example.test:1000",),
+            avito_proxy_rotation_enabled=True,
+        )
+    )
+    client._browser_context = SimpleNamespace(pages=[page])  # type: ignore[assignment]
+
+    with pytest.raises(_AvitoProxyRotationRequired, match="about:blank"):
+        asyncio.run(
+            client._search_browser_with_current_proxy(
+                "https://www.avito.ru/moskva?q=test"
+            )
+        )
+
+    assert page.closed is True
+    assert page.screenshot_calls == 0
