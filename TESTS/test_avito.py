@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from avito_reminder.avito import (
@@ -48,6 +49,28 @@ class RouteStubClient(AvitoClient):
 
 class BrowserStubClient(AvitoClient):
     async def _search_browser(self, url, **_kwargs):
+        return []
+
+
+class RestartingBrowserClient(AvitoClient):
+    def __init__(self, client_settings):
+        super().__init__(client_settings)
+        self.start_calls = 0
+        self.search_calls = 0
+
+    async def _start_browser(self) -> None:
+        self.start_calls += 1
+        self._browser_context = SimpleNamespace()  # type: ignore[assignment]
+
+    async def _wait_for_browser_slot(self) -> None:
+        return None
+
+    async def _search_browser_with_current_proxy(self, *_args, **_kwargs):
+        self.search_calls += 1
+        if self.search_calls == 1:
+            raise PlaywrightError(
+                "BrowserContext.new_page: Target page, context or browser has been closed"
+            )
         return []
 
 
@@ -436,6 +459,37 @@ def test_browser_transport_uses_direct_chromium_route(tmp_path) -> None:
     assert client.last_route == "chromium-direct"
 
 
+def test_closed_browser_is_restarted_automatically(tmp_path) -> None:
+    client = RestartingBrowserClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+        )
+    )
+
+    assert asyncio.run(client.search("https://www.avito.ru/moskva")) == []
+    assert client.start_calls == 2
+    assert client.search_calls == 2
+
+
+def test_existing_avito_tab_is_reused_between_checks(tmp_path) -> None:
+    page = SimpleNamespace(
+        url="https://www.avito.ru/moskva?q=test",
+        is_closed=lambda: False,
+    )
+
+    class ContextStub:
+        pages = [page]
+
+        async def new_page(self):
+            raise AssertionError("новая вкладка не должна создаваться")
+
+    client = AvitoClient(settings(tmp_path / "test.db", avito_transport="browser"))
+    client._browser_context = ContextStub()  # type: ignore[assignment]
+
+    assert asyncio.run(client._acquire_browser_page()) is page
+
+
 def test_browser_waits_and_reloads_until_avito_access_returns(tmp_path, monkeypatch) -> None:
     blocked_html = "<h2>Доступ ограничен: проблема с IP</h2>"
     ready_html = "<html><title>Avito</title><main>Главная</main></html>"
@@ -604,6 +658,7 @@ def test_browser_requests_proxy_rotation_before_global_cooldown(
 def test_proxy_rotation_recreates_network_on_next_endpoint(tmp_path, monkeypatch) -> None:
     first = "http://user:password@first.proxy.test:1000"
     second = "http://user:password@second.proxy.test:1000"
+    monkeypatch.setattr("avito_reminder.avito.random.randrange", lambda _size: 0)
     client = AvitoClient(
         settings(
             tmp_path / "test.db",
@@ -653,6 +708,6 @@ def test_proxy_timeout_on_about_blank_rotates_without_screenshot(tmp_path) -> No
             )
         )
 
-    assert page.closed is True
+    assert page.closed is False
     assert page.screenshot_calls == 0
     assert page.status_content_calls == 1

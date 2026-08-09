@@ -416,6 +416,14 @@ def _playwright_proxy(proxy_url: str) -> dict[str, str]:
     return result
 
 
+def _is_browser_closed_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return exc.__class__.__name__ == "TargetClosedError" or (
+        "target page, context or browser has been closed" in text
+        or "browsercontext.new_page: target" in text and "closed" in text
+    )
+
+
 class AvitoClient:
     def __init__(self, settings: Settings):
         self._settings = settings
@@ -470,9 +478,11 @@ class AvitoClient:
         browser_args = ["--disable-dev-shm-usage"]
         if proxy_url is None:
             browser_args.insert(0, "--no-proxy-server")
-        self._playwright = await async_playwright().start()
+        if self._playwright is None:
+            self._playwright = await async_playwright().start()
+        playwright = self._playwright
         try:
-            self._browser_context = await self._playwright.chromium.launch_persistent_context(
+            browser_context = await playwright.chromium.launch_persistent_context(
                 user_data_dir=str(profile_path),
                 executable_path=executable_path,
                 headless=self._settings.avito_browser_headless,
@@ -483,12 +493,18 @@ class AvitoClient:
                 accept_downloads=False,
             )
         except PlaywrightError as exc:
-            await self._playwright.stop()
-            self._playwright = None
+            await playwright.stop()
+            if self._playwright is playwright:
+                self._playwright = None
             executable_hint = executable_path or "встроенный Chromium Playwright"
             raise AvitoNetworkError(
                 f"Не удалось запустить Chromium ({executable_hint}): {exc}"
             ) from exc
+        self._browser_context = browser_context
+        browser_context.on(
+            "close",
+            lambda *_args: self._mark_browser_context_closed(browser_context),
+        )
 
         logger.info(
             "Chromium для Avito запущен: route=%s, executable=%s, headless=%s, profile=%s",
@@ -498,6 +514,18 @@ class AvitoClient:
             profile_path,
         )
         await self._log_browser_public_ip(proxy_url)
+
+    def _mark_browser_context_closed(self, browser_context: BrowserContext) -> None:
+        if self._browser_context is browser_context:
+            self._browser_context = None
+            self._browser_warmed_up = False
+
+    async def _reset_closed_browser(self) -> None:
+        self._browser_context = None
+        self._browser_warmed_up = False
+        if self._curl_session is not None:
+            await self._curl_session.close()
+            self._curl_session = None
 
     async def _log_browser_public_ip(self, proxy_url: str | None) -> None:
         if not self._settings.avito_log_public_ip or self._playwright is None:
@@ -645,6 +673,7 @@ class AvitoClient:
             self._raise_if_cooling_down()
             await self._wait_for_browser_slot()
             rotations = 0
+            browser_restarts = 0
             while True:
                 await self._start_browser()
                 try:
@@ -667,20 +696,40 @@ class AvitoClient:
                         ) from exc
                     rotations += 1
                     await self._rotate_avito_proxy(rotations)
+                except PlaywrightError as exc:
+                    if not _is_browser_closed_error(exc):
+                        raise AvitoNetworkError(
+                            f"Ошибка управления Chromium: {type(exc).__name__}"
+                        ) from exc
+                    if browser_restarts >= 1:
+                        raise AvitoNetworkError(
+                            "Chromium повторно закрылся во время проверки Avito"
+                        ) from exc
+                    browser_restarts += 1
+                    logger.warning(
+                        "Окно Chromium было закрыто; автоматически запускаю его заново"
+                    )
+                    await self._reset_closed_browser()
 
     async def _acquire_browser_page(self) -> Page:
-        """Reuse Chromium's startup tab and remove duplicate about:blank tabs."""
+        """Keep one working tab alive and reuse it between scheduled checks."""
         assert self._browser_context is not None
+        active_pages = [
+            page for page in self._browser_context.pages if not page.is_closed()
+        ]
         blank_pages = [
-            page
-            for page in self._browser_context.pages
-            if not page.is_closed() and page.url in {"", "about:blank"}
+            page for page in active_pages if page.url in {"", "about:blank"}
         ]
         if blank_pages:
             page = blank_pages[0]
             for duplicate in blank_pages[1:]:
                 await duplicate.close()
             return page
+        avito_pages = [page for page in active_pages if _is_avito_url(page.url)]
+        if avito_pages:
+            return avito_pages[0]
+        if active_pages:
+            return active_pages[0]
         return await self._browser_context.new_page()
 
     async def _search_browser_with_current_proxy(
@@ -752,6 +801,8 @@ class AvitoClient:
             except AvitoBlockedError:
                 raise
             except (PlaywrightTimeoutError, PlaywrightError, AvitoNetworkError) as exc:
+                if _is_browser_closed_error(exc):
+                    raise
                 last_error = exc
                 if (
                     page.url in {"", "about:blank"}
@@ -777,9 +828,6 @@ class AvitoClient:
                         exc,
                     )
                     await asyncio.sleep(delay)
-            finally:
-                await page.close()
-
         raise AvitoNetworkError(
             f"Avito недоступен через Chromium: {last_error}",
             diagnostic_path=last_diagnostic_path,
