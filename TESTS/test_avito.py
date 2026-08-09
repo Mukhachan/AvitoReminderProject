@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -74,6 +75,10 @@ class BlankTimeoutPageStub:
         self.url = "about:blank"
         self.closed = False
         self.screenshot_calls = 0
+        self.status_content_calls = 0
+
+    async def set_content(self, *_args, **_kwargs) -> None:
+        self.status_content_calls += 1
 
     async def goto(self, *_args, **_kwargs):
         raise PlaywrightTimeoutError("navigation timeout")
@@ -86,6 +91,36 @@ class BlankTimeoutPageStub:
 
     def is_closed(self) -> bool:
         return self.closed
+
+
+class PublicIpRequestContextStub:
+    def __init__(self) -> None:
+        self.disposed = False
+        self.requested_url: str | None = None
+
+    async def get(self, url: str, **_kwargs):
+        self.requested_url = url
+        return SimpleNamespace(
+            ok=True,
+            status=200,
+            json=self._json,
+        )
+
+    async def _json(self):
+        return {"ip": "203.0.113.42"}
+
+    async def dispose(self) -> None:
+        self.disposed = True
+
+
+class PublicIpRequestFactoryStub:
+    def __init__(self, context: PublicIpRequestContextStub) -> None:
+        self.context = context
+        self.proxy = None
+
+    async def new_context(self, *, proxy=None):
+        self.proxy = proxy
+        return self.context
 
 
 def test_build_search_url_encodes_parameters() -> None:
@@ -368,6 +403,27 @@ def test_playwright_proxy_keeps_credentials_out_of_server_url() -> None:
     }
 
 
+def test_public_ip_is_logged_through_current_proxy(tmp_path, caplog) -> None:
+    proxy_url = "http://user:password@proxy.example.test:1000"
+    request_context = PublicIpRequestContextStub()
+    request_factory = PublicIpRequestFactoryStub(request_context)
+    client = AvitoClient(settings(tmp_path / "test.db"))
+    client._playwright = SimpleNamespace(request=request_factory)  # type: ignore[assignment]
+    caplog.set_level(logging.INFO, logger="avito_reminder.avito")
+
+    asyncio.run(client._log_browser_public_ip(proxy_url))
+
+    assert request_factory.proxy == {
+        "server": "http://proxy.example.test:1000",
+        "username": "user",
+        "password": "password",
+    }
+    assert request_context.requested_url == "https://api.ipify.org?format=json"
+    assert request_context.disposed is True
+    assert "Выходной IP Chromium для Avito: 203.0.113.42" in caplog.text
+    assert "password" not in caplog.text
+
+
 def test_browser_transport_uses_direct_chromium_route(tmp_path) -> None:
     client = BrowserStubClient(
         settings(
@@ -585,6 +641,7 @@ def test_proxy_timeout_on_about_blank_rotates_without_screenshot(tmp_path) -> No
             avito_proxy_mode="proxy",
             avito_proxy_pool=("http://user:password@proxy.example.test:1000",),
             avito_proxy_rotation_enabled=True,
+            avito_browser_headless=False,
         )
     )
     client._browser_context = SimpleNamespace(pages=[page])  # type: ignore[assignment]
@@ -598,3 +655,4 @@ def test_proxy_timeout_on_about_blank_rotates_without_screenshot(tmp_path) -> No
 
     assert page.closed is True
     assert page.screenshot_calls == 0
+    assert page.status_content_calls == 1

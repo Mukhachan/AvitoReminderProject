@@ -110,6 +110,7 @@ class Settings:
     avito_proxy_rotate_after_reloads: int
     avito_proxy_rotation_delay_seconds: int
     avito_proxy_max_rotations: int
+    avito_log_public_ip: bool
     avito_transport: str
     avito_http_impersonate: str
     avito_api_max_pages: int
@@ -179,6 +180,7 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
             minimum=0,
         ),
         avito_proxy_max_rotations=_as_int("AVITO_PROXY_MAX_ROTATIONS", 5),
+        avito_log_public_ip=_as_bool(os.getenv("AVITO_LOG_PUBLIC_IP"), True),
         avito_transport=_choice(
             "AVITO_TRANSPORT",
             "hybrid",

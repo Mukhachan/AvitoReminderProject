@@ -68,6 +68,7 @@ def test_settings_load_avito_proxy_pool_and_rotation(monkeypatch, tmp_path) -> N
     monkeypatch.setenv("AVITO_PROXY_ROTATE_AFTER_RELOADS", "2")
     monkeypatch.setenv("AVITO_PROXY_ROTATION_DELAY_SECONDS", "7")
     monkeypatch.setenv("AVITO_PROXY_MAX_ROTATIONS", "4")
+    monkeypatch.setenv("AVITO_LOG_PUBLIC_IP", "false")
 
     settings = load_settings()
 
@@ -80,6 +81,7 @@ def test_settings_load_avito_proxy_pool_and_rotation(monkeypatch, tmp_path) -> N
     assert settings.avito_proxy_rotate_after_reloads == 2
     assert settings.avito_proxy_rotation_delay_seconds == 7
     assert settings.avito_proxy_max_rotations == 4
+    assert settings.avito_log_public_ip is False
 
 
 def test_telegram_transport_applies_rdns(monkeypatch) -> None:

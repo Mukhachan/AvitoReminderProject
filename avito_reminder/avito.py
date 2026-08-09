@@ -10,6 +10,7 @@ import shutil
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import suppress
 from datetime import datetime
+from ipaddress import ip_address
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse, urlsplit
 
@@ -43,6 +44,7 @@ from .models import AvitoItem
 logger = logging.getLogger(__name__)
 
 AVITO_BASE_URL = "https://www.avito.ru"
+PUBLIC_IP_CHECK_URL = "https://api.ipify.org?format=json"
 AVITO_BLOCK_HTTP_STATUSES = frozenset({401, 403, 429})
 AVITO_BLOCK_MARKERS = (
     "доступ ограничен: проблема с ip",
@@ -495,6 +497,49 @@ class AvitoClient:
             self._settings.avito_browser_headless,
             profile_path,
         )
+        await self._log_browser_public_ip(proxy_url)
+
+    async def _log_browser_public_ip(self, proxy_url: str | None) -> None:
+        if not self._settings.avito_log_public_ip or self._playwright is None:
+            return
+
+        request_context = None
+        route = _proxy_label(proxy_url)
+        try:
+            request_context = await self._playwright.request.new_context(
+                proxy=_playwright_proxy(proxy_url) if proxy_url else None,
+            )
+            response = await request_context.get(
+                PUBLIC_IP_CHECK_URL,
+                timeout=min(8_000, self._settings.request_timeout_seconds * 1000),
+            )
+            if not response.ok:
+                logger.warning(
+                    "Не удалось определить выходной IP Chromium: route=%s, HTTP %s",
+                    route,
+                    response.status,
+                )
+                return
+            payload = await response.json()
+            raw_ip = payload.get("ip") if isinstance(payload, dict) else None
+            if not isinstance(raw_ip, str):
+                raise ValueError("ответ не содержит поле ip")
+            public_ip = str(ip_address(raw_ip.strip()))
+            logger.info(
+                "Выходной IP Chromium для Avito: %s, route=%s",
+                public_ip,
+                route,
+            )
+        except (PlaywrightError, ValueError, TypeError) as exc:
+            logger.warning(
+                "Не удалось определить выходной IP Chromium: route=%s, ошибка=%s",
+                route,
+                type(exc).__name__,
+            )
+        finally:
+            if request_context is not None:
+                with suppress(PlaywrightError):
+                    await request_context.dispose()
 
     def _routes(self) -> tuple[bool, ...]:
         mode = self._settings.avito_proxy_mode
@@ -615,7 +660,7 @@ class AvitoClient:
                         self._start_cooldown()
                         cooldown = self._settings.avito_cooldown_seconds
                         raise AvitoBlockedError(
-                            f"Avito продолжил блокировать доступ после {rotations} смен IP; "
+                            f"Avito не открылся после {rotations} смен IP: {exc}; "
                             f"парсер приостановлен на {max(1, cooldown // 3600)} ч.",
                             diagnostic_path=exc.diagnostic_path,
                             retry_after_seconds=cooldown,
@@ -715,7 +760,9 @@ class AvitoClient:
                 ):
                     logger.warning(
                         "Прокси не смог открыть Avito: вкладка осталась about:blank; "
-                        "переключаю IP без создания снимка"
+                        "переключаю IP без создания снимка. Ошибка: %s: %s",
+                        type(exc).__name__,
+                        exc,
                     )
                     raise _AvitoProxyRotationRequired(
                         "Прокси не открыл Avito, вкладка осталась about:blank; "
@@ -1003,13 +1050,32 @@ class AvitoClient:
         referer: str | None = None,
         on_blocked: BlockedCallback | None = None,
     ) -> tuple[int | None, str, bool]:
+        if not self._settings.avito_browser_headless and page.url in {"", "about:blank"}:
+            with suppress(PlaywrightError):
+                await page.set_content(
+                    """
+                    <!doctype html><html lang="ru"><head><meta charset="utf-8">
+                    <title>Avito Parser — подключение</title></head>
+                    <body style="font:20px sans-serif;padding:40px;color:#333">
+                    <h2>Подключение к Avito…</h2>
+                    <p>Проверяется выбранный IP. Если прокси не ответит, бот автоматически
+                    переключится на следующий адрес пула.</p></body></html>
+                    """,
+                    wait_until="domcontentloaded",
+                    timeout=min(5_000, self._settings.request_timeout_seconds * 1000),
+                )
         response = await page.goto(
             url,
-            wait_until="domcontentloaded",
+            wait_until="commit",
             timeout=self._settings.request_timeout_seconds * 1000,
             referer=referer,
         )
         status = response.status if response is not None else None
+        with suppress(PlaywrightTimeoutError):
+            await page.wait_for_load_state(
+                "domcontentloaded",
+                timeout=min(10_000, self._settings.request_timeout_seconds * 1000),
+            )
         html = await page.content()
         logger.info("Avito: %s открыта, HTTP %s", page_name, status)
         return await self._wait_then_reload_avito_page(

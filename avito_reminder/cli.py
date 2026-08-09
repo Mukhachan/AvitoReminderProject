@@ -78,6 +78,10 @@ async def doctor(live: bool, telegram: bool, query: str, city: str) -> int:
     print("Avito proxy mode:", settings.avito_proxy_mode)
     print("Avito proxy pool:", len(settings.avito_proxy_pool), "configured")
     print(
+        "Avito public IP logging:",
+        "enabled" if settings.avito_log_public_ip else "disabled",
+    )
+    print(
         "Avito IP rotation:",
         "enabled" if settings.avito_proxy_rotation_enabled else "disabled",
     )
