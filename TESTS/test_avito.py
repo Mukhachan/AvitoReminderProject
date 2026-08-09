@@ -319,6 +319,22 @@ def test_proxy_pool_starts_direct_and_rotates_sticky_endpoints(tmp_path) -> None
     assert pool.rotate() == first
 
 
+def test_proxy_mode_starts_immediately_on_first_pool_endpoint(tmp_path) -> None:
+    first = "http://user:password@first.proxy.test:1000"
+    second = "http://user:password@second.proxy.test:1000"
+    pool = _AvitoProxyPool(
+        settings(
+            tmp_path / "test.db",
+            avito_proxy_mode="proxy",
+            avito_proxy_pool=(first, second),
+            avito_proxy_rotation_enabled=True,
+        )
+    )
+
+    assert pool.current == first
+    assert pool.rotate() == second
+
+
 def test_playwright_proxy_keeps_credentials_out_of_server_url() -> None:
     assert _playwright_proxy(
         "http://user%40account:password%3Avalue@proxy.example.test:1000"
