@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from curl_cffi.requests import AsyncSession as CurlAsyncSession
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
@@ -144,6 +145,88 @@ class PublicIpRequestFactoryStub:
     async def new_context(self, *, proxy=None):
         self.proxy = proxy
         return self.context
+
+
+class CookieBrowserContextStub:
+    def __init__(self) -> None:
+        self.added_cookies: list[dict[str, object]] = []
+
+    async def cookies(self, _urls):
+        return [
+            {
+                "name": "ft",
+                "value": "browser-token",
+                "domain": ".avito.ru",
+                "path": "/",
+                "secure": True,
+                "expires": 2_000_000_000,
+            },
+            {
+                "name": "expired",
+                "value": "old",
+                "domain": ".avito.ru",
+                "path": "/",
+                "secure": True,
+                "expires": 1,
+            },
+        ]
+
+    async def add_cookies(self, cookies):
+        self.added_cookies.extend(cookies)
+
+
+class BrowserLaunchContextStub:
+    def __init__(self) -> None:
+        self.init_scripts: list[str] = []
+        self.extra_http_headers: dict[str, str] = {}
+        self.close_callback = None
+
+    async def add_init_script(self, *, script: str) -> None:
+        self.init_scripts.append(script)
+
+    async def set_extra_http_headers(self, headers: dict[str, str]) -> None:
+        self.extra_http_headers = headers
+
+    def on(self, event: str, callback) -> None:
+        assert event == "close"
+        self.close_callback = callback
+
+
+class ChromiumLauncherStub:
+    def __init__(self, context: BrowserLaunchContextStub) -> None:
+        self.context = context
+        self.options = None
+
+    async def launch_persistent_context(self, **options):
+        self.options = options
+        return self.context
+
+
+class IdentityPageStub:
+    url = "https://www.avito.ru/#block"
+
+    def __init__(self) -> None:
+        self.evaluated_scripts: list[str] = []
+
+    def is_closed(self) -> bool:
+        return False
+
+    async def evaluate(self, script: str) -> None:
+        self.evaluated_scripts.append(script)
+
+
+class BlockedIdentityContextStub:
+    def __init__(self) -> None:
+        self.page = IdentityPageStub()
+        self.pages = [self.page]
+        self.cookies_cleared = False
+        self.closed = False
+
+    async def clear_cookies(self) -> None:
+        self.cookies_cleared = True
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 def test_build_search_url_encodes_parameters() -> None:
@@ -447,6 +530,83 @@ def test_public_ip_is_logged_through_current_proxy(tmp_path, caplog) -> None:
     assert "password" not in caplog.text
 
 
+def test_browser_launch_uses_one_coherent_identity(tmp_path, monkeypatch) -> None:
+    context = BrowserLaunchContextStub()
+    launcher = ChromiumLauncherStub(context)
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="hybrid",
+            avito_log_public_ip=False,
+        )
+    )
+    client._playwright = SimpleNamespace(chromium=launcher)  # type: ignore[assignment]
+    monkeypatch.setattr("avito_reminder.avito.resolve_chromium_executable", lambda _settings: None)
+
+    asyncio.run(client._start_browser())
+
+    identity = client._ensure_browser_identity()
+    assert launcher.options["user_agent"] == identity.user_agent
+    assert launcher.options["locale"] == identity.locale
+    assert launcher.options["timezone_id"] == identity.timezone_id
+    assert launcher.options["viewport"] == identity.viewport
+    assert launcher.options["screen"] == identity.screen
+    assert context.extra_http_headers == identity.http_headers
+    assert "--disable-blink-features=AutomationControlled" in launcher.options["args"]
+    assert context.init_scripts
+    assert "Navigator.prototype, 'webdriver'" in context.init_scripts[0]
+
+
+@pytest.mark.filterwarnings("ignore::curl_cffi.utils.CurlCffiWarning")
+def test_real_curl_cookie_jar_syncs_with_browser_in_both_directions(tmp_path) -> None:
+    client = AvitoClient(settings(tmp_path / "test.db", avito_transport="hybrid"))
+    browser_context = CookieBrowserContextStub()
+    client._browser_context = browser_context  # type: ignore[assignment]
+
+    async def scenario() -> None:
+        session = CurlAsyncSession(impersonate="chrome", trust_env=False)
+        try:
+            await client._sync_browser_cookies_to_curl(session)
+            curl_values = {cookie.name: cookie.value for cookie in session.cookies.jar}
+            assert curl_values == {"ft": "browser-token"}
+
+            session.cookies.set(
+                "server-refresh",
+                "new-token",
+                domain=".avito.ru",
+                path="/",
+                secure=True,
+            )
+            await client._sync_curl_cookies_to_browser(session)
+        finally:
+            await session.close()
+
+    asyncio.run(scenario())
+
+    added = {cookie["name"]: cookie["value"] for cookie in browser_context.added_cookies}
+    assert added == {"ft": "browser-token", "server-refresh": "new-token"}
+
+
+def test_blocked_identity_clears_site_data_and_rotates_fingerprint(tmp_path) -> None:
+    client = AvitoClient(settings(tmp_path / "test.db", avito_transport="hybrid"))
+    context = BlockedIdentityContextStub()
+    client._browser_context = context  # type: ignore[assignment]
+    previous = client._ensure_browser_identity()
+
+    asyncio.run(client._replace_blocked_browser_identity("test block"))
+
+    current = client._ensure_browser_identity()
+    assert context.cookies_cleared is True
+    assert context.page.evaluated_scripts
+    assert context.closed is True
+    assert current.identity_id != previous.identity_id
+    assert (current.viewport_width, current.viewport_height) != (
+        previous.viewport_width,
+        previous.viewport_height,
+    )
+    assert client._browser_context is None
+
+
 def test_browser_transport_uses_direct_chromium_route(tmp_path) -> None:
     client = BrowserStubClient(
         settings(
@@ -611,9 +771,9 @@ def test_browser_starts_global_cooldown_after_repeated_reload_errors(
     assert delays == [90, 90, 90]
 
 
-def test_hard_ip_block_requests_immediate_proxy_rotation(tmp_path, monkeypatch) -> None:
+def test_hard_ip_block_waits_then_requests_proxy_rotation(tmp_path, monkeypatch) -> None:
     blocked_html = "<h2>Доступ ограничен: проблема с IP</h2>"
-    page = ReloadingPageStub([])
+    page = ReloadingPageStub([(200, blocked_html)])
     page.url = "https://www.avito.ru/#block"
     client = AvitoClient(
         settings(
@@ -624,6 +784,7 @@ def test_hard_ip_block_requests_immediate_proxy_rotation(tmp_path, monkeypatch) 
             avito_proxy_rotation_enabled=True,
             avito_proxy_rotate_after_reloads=1,
             avito_page_reload_delay_seconds=90,
+            avito_page_reload_jitter_seconds=30,
         )
     )
     delays: list[float] = []
@@ -636,6 +797,12 @@ def test_hard_ip_block_requests_immediate_proxy_rotation(tmp_path, monkeypatch) 
         notifications.append(exc)
 
     monkeypatch.setattr("avito_reminder.avito.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("avito_reminder.avito.random.uniform", lambda _low, high: high)
+
+    async def fake_diagnostic(_page, _status):
+        return tmp_path / "blocked.png"
+
+    monkeypatch.setattr(client, "_save_browser_diagnostic", fake_diagnostic)
 
     async def scenario() -> None:
         with pytest.raises(_AvitoProxyRotationRequired) as caught:
@@ -651,10 +818,10 @@ def test_hard_ip_block_requests_immediate_proxy_rotation(tmp_path, monkeypatch) 
 
     asyncio.run(scenario())
 
-    assert page.reload_count == 0
-    assert delays == []
+    assert page.reload_count == 1
+    assert delays == [120]
     assert len(notifications) == 1
-    assert notifications[0].retry_after_seconds == 0
+    assert notifications[0].retry_after_seconds is None
 
 
 def test_proxy_rotation_recreates_network_on_next_endpoint(tmp_path, monkeypatch) -> None:

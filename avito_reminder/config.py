@@ -117,9 +117,14 @@ class Settings:
     avito_browser_headless: bool
     avito_browser_profile_path: Path
     avito_chromium_executable: str | None
+    avito_browser_stealth: bool
+    avito_identity_rotate_on_block: bool
+    avito_browser_locale: str
+    avito_browser_timezone: str
     avito_min_request_interval_seconds: int
     avito_request_jitter_seconds: int
     avito_page_reload_delay_seconds: int
+    avito_page_reload_jitter_seconds: int
     avito_error_reload_attempts: int
     avito_cooldown_seconds: int
     user_agent: str
@@ -194,9 +199,22 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
             os.getenv("AVITO_BROWSER_PROFILE_PATH", "data/chromium-profile")
         ),
         avito_chromium_executable=os.getenv("AVITO_CHROMIUM_EXECUTABLE") or None,
+        avito_browser_stealth=_as_bool(os.getenv("AVITO_BROWSER_STEALTH"), True),
+        avito_identity_rotate_on_block=_as_bool(
+            os.getenv("AVITO_IDENTITY_ROTATE_ON_BLOCK"), True
+        ),
+        avito_browser_locale=os.getenv("AVITO_BROWSER_LOCALE", "ru-RU").strip()
+        or "ru-RU",
+        avito_browser_timezone=os.getenv(
+            "AVITO_BROWSER_TIMEZONE", "Europe/Moscow"
+        ).strip()
+        or "Europe/Moscow",
         avito_min_request_interval_seconds=_as_int("AVITO_MIN_REQUEST_INTERVAL_SECONDS", 60),
         avito_request_jitter_seconds=_as_int("AVITO_REQUEST_JITTER_SECONDS", 30, minimum=0),
         avito_page_reload_delay_seconds=_as_int("AVITO_PAGE_RELOAD_DELAY_SECONDS", 90),
+        avito_page_reload_jitter_seconds=_as_int(
+            "AVITO_PAGE_RELOAD_JITTER_SECONDS", 30, minimum=0
+        ),
         avito_error_reload_attempts=_as_int("AVITO_ERROR_RELOAD_ATTEMPTS", 3),
         avito_cooldown_seconds=_as_int("AVITO_COOLDOWN_SECONDS", 10_800),
         user_agent=os.getenv(

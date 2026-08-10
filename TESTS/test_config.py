@@ -18,9 +18,14 @@ def test_settings_split_telegram_and_avito_proxies(monkeypatch) -> None:
     monkeypatch.setenv("AVITO_API_MAX_PAGES", "4")
     monkeypatch.setenv("AVITO_BROWSER_HEADLESS", "true")
     monkeypatch.setenv("AVITO_BROWSER_PROFILE_PATH", "data/test-browser-profile")
+    monkeypatch.setenv("AVITO_BROWSER_STEALTH", "true")
+    monkeypatch.setenv("AVITO_IDENTITY_ROTATE_ON_BLOCK", "true")
+    monkeypatch.setenv("AVITO_BROWSER_LOCALE", "ru-RU")
+    monkeypatch.setenv("AVITO_BROWSER_TIMEZONE", "Europe/Moscow")
     monkeypatch.setenv("AVITO_MIN_REQUEST_INTERVAL_SECONDS", "25")
     monkeypatch.setenv("AVITO_REQUEST_JITTER_SECONDS", "5")
     monkeypatch.setenv("AVITO_PAGE_RELOAD_DELAY_SECONDS", "91")
+    monkeypatch.setenv("AVITO_PAGE_RELOAD_JITTER_SECONDS", "29")
     monkeypatch.setenv("AVITO_ERROR_RELOAD_ATTEMPTS", "4")
     monkeypatch.setenv("AVITO_COOLDOWN_SECONDS", "14400")
 
@@ -36,9 +41,14 @@ def test_settings_split_telegram_and_avito_proxies(monkeypatch) -> None:
     assert settings.avito_api_max_pages == 4
     assert settings.avito_browser_headless is True
     assert settings.avito_browser_profile_path.as_posix() == "data/test-browser-profile"
+    assert settings.avito_browser_stealth is True
+    assert settings.avito_identity_rotate_on_block is True
+    assert settings.avito_browser_locale == "ru-RU"
+    assert settings.avito_browser_timezone == "Europe/Moscow"
     assert settings.avito_min_request_interval_seconds == 25
     assert settings.avito_request_jitter_seconds == 5
     assert settings.avito_page_reload_delay_seconds == 91
+    assert settings.avito_page_reload_jitter_seconds == 29
     assert settings.avito_error_reload_attempts == 4
     assert settings.avito_cooldown_seconds == 14_400
 

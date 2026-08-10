@@ -123,22 +123,18 @@ class MonitorService:
                 or self.settings.avito_proxy_change_url
             )
         )
-        if _exc.retry_after_seconds == 0 and rotation_enabled:
-            text = (
-                f"🔄 <b>Поиск #{search.id}: Avito заблокировал текущий IP.</b>\n"
-                "Переключаю Chromium на следующий IP пула без ожидания."
-            )
-        else:
-            next_action = (
-                "Если блокировка останется, парсер автоматически сменит IP."
-                if rotation_enabled
-                else "Chromium останется открытым для повторной загрузки."
-            )
-            text = (
-                f"⏳ <b>Поиск #{search.id}: Avito ограничил доступ.</b>\n"
-                f"Обновление через {self.settings.avito_page_reload_delay_seconds} секунд. "
-                f"{next_action}"
-            )
+        next_action = (
+            "Если блокировка останется, парсер автоматически сменит IP."
+            if rotation_enabled
+            else "Chromium останется открытым для повторной загрузки."
+        )
+        wait_min = self.settings.avito_page_reload_delay_seconds
+        wait_max = wait_min + self.settings.avito_page_reload_jitter_seconds
+        wait_text = str(wait_min) if wait_min == wait_max else f"{wait_min}–{wait_max}"
+        text = (
+            f"⏳ <b>Поиск #{search.id}: Avito ограничил доступ.</b>\n"
+            f"Обновление через {wait_text} секунд. {next_action}"
+        )
         try:
             try:
                 await self.bot.send_message(search.chat_id, text)

@@ -7,6 +7,7 @@ import math
 import random
 import re
 import shutil
+import time
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import suppress
 from datetime import datetime
@@ -38,6 +39,13 @@ from .avito_mfe import (
     extract_page_state,
     parse_api_response,
 )
+from .browser_identity import (
+    BrowserIdentity,
+    load_browser_identity,
+    resolve_http_impersonate,
+    rotate_browser_identity,
+    stealth_init_script,
+)
 from .config import Settings
 from .models import AvitoItem
 
@@ -53,6 +61,20 @@ AVITO_BLOCK_MARKERS = (
     "captcha challenge",
     "too many requests",
 )
+AVITO_SITE_DATA_CLEAR_SCRIPT = """
+async () => {
+  localStorage.clear();
+  sessionStorage.clear();
+  if (window.caches) {
+    for (const key of await window.caches.keys()) await window.caches.delete(key);
+  }
+  if (window.indexedDB?.databases) {
+    for (const database of await window.indexedDB.databases()) {
+      if (database.name) window.indexedDB.deleteDatabase(database.name);
+    }
+  }
+}
+"""
 
 
 def _is_blocked_html(html: str) -> bool:
@@ -62,13 +84,6 @@ def _is_blocked_html(html: str) -> bool:
 
 def _is_blocked_page(status: int | None, html: str) -> bool:
     return status in AVITO_BLOCK_HTTP_STATUSES or _is_blocked_html(html)
-
-
-def _is_hard_ip_block_page(html: str, url: str) -> bool:
-    return (
-        urlsplit(url).fragment.lower() == "block"
-        or "доступ ограничен: проблема с ip" in html.lower()
-    )
 
 
 def _is_avito_url(url: str) -> bool:
@@ -440,11 +455,27 @@ class AvitoClient:
         self._curl_session: CurlAsyncSession | None = None
         self._playwright: Playwright | None = None
         self._browser_context: BrowserContext | None = None
+        self._browser_identity: BrowserIdentity | None = None
         self._browser_lock = asyncio.Lock()
         self._browser_warmed_up = False
         self._last_browser_request_at: float | None = None
         self._cooldown_until: float | None = None
         self.last_route: str | None = None
+
+    def _ensure_browser_identity(self) -> BrowserIdentity:
+        if self._browser_identity is None:
+            impersonate = resolve_http_impersonate(
+                self._settings.user_agent,
+                self._settings.avito_http_impersonate,
+            )
+            self._browser_identity = load_browser_identity(
+                profile_path=self._settings.avito_browser_profile_path,
+                user_agent=self._settings.user_agent,
+                impersonate=impersonate,
+                locale=self._settings.avito_browser_locale,
+                timezone_id=self._settings.avito_browser_timezone,
+            )
+        return self._browser_identity
 
     async def __aenter__(self) -> AvitoClient:
         await self.start()
@@ -480,9 +511,15 @@ class AvitoClient:
 
         profile_path = self._settings.avito_browser_profile_path
         profile_path.mkdir(parents=True, exist_ok=True)
+        identity = self._ensure_browser_identity()
         executable_path = resolve_chromium_executable(self._settings)
         proxy_url = self._avito_proxies.current
-        browser_args = ["--disable-dev-shm-usage"]
+        browser_args = [
+            "--disable-dev-shm-usage",
+            f"--window-size={identity.screen_width},{identity.screen_height}",
+        ]
+        if self._settings.avito_browser_stealth:
+            browser_args.append("--disable-blink-features=AutomationControlled")
         if proxy_url is None:
             browser_args.insert(0, "--no-proxy-server")
         if self._playwright is None:
@@ -495,8 +532,14 @@ class AvitoClient:
                 headless=self._settings.avito_browser_headless,
                 args=browser_args,
                 proxy=_playwright_proxy(proxy_url) if proxy_url else None,
-                locale="ru-RU",
-                viewport={"width": 1365, "height": 900},
+                user_agent=identity.user_agent,
+                locale=identity.locale,
+                timezone_id=identity.timezone_id,
+                viewport=identity.viewport,
+                screen=identity.screen,
+                device_scale_factor=identity.device_scale_factor,
+                is_mobile=identity.is_mobile,
+                has_touch=identity.is_mobile,
                 accept_downloads=False,
             )
         except PlaywrightError as exc:
@@ -512,13 +555,21 @@ class AvitoClient:
             "close",
             lambda *_args: self._mark_browser_context_closed(browser_context),
         )
+        await browser_context.set_extra_http_headers(identity.http_headers)
+        if self._settings.avito_browser_stealth:
+            await browser_context.add_init_script(script=stealth_init_script(identity))
 
         logger.info(
-            "Chromium для Avito запущен: route=%s, executable=%s, headless=%s, profile=%s",
+            "Chromium для Avito запущен: route=%s, executable=%s, headless=%s, "
+            "profile=%s, identity=%s, viewport=%sx%s, impersonate=%s",
             _proxy_label(proxy_url),
             executable_path or "playwright",
             self._settings.avito_browser_headless,
             profile_path,
+            identity.identity_id,
+            identity.viewport_width,
+            identity.viewport_height,
+            identity.impersonate,
         )
         await self._log_browser_public_ip(proxy_url)
 
@@ -693,6 +744,9 @@ class AvitoClient:
                         not self._proxy_rotation_available()
                         or rotations >= self._settings.avito_proxy_max_rotations
                     ):
+                        await self._replace_blocked_browser_identity(
+                            "исчерпан лимит смен IP"
+                        )
                         self._start_cooldown()
                         cooldown = self._settings.avito_cooldown_seconds
                         raise AvitoBlockedError(
@@ -850,6 +904,36 @@ class AvitoClient:
             )
         )
 
+    async def _replace_blocked_browser_identity(self, reason: str) -> None:
+        previous = self._ensure_browser_identity()
+        context = self._browser_context
+        if context is not None:
+            for page in context.pages:
+                if page.is_closed() or not _is_avito_url(page.url):
+                    continue
+                with suppress(PlaywrightError):
+                    await page.evaluate(AVITO_SITE_DATA_CLEAR_SCRIPT)
+            with suppress(PlaywrightError):
+                await context.clear_cookies()
+        if self._curl_session is not None:
+            self._curl_session.cookies.clear()
+
+        if self._settings.avito_identity_rotate_on_block:
+            self._browser_identity = rotate_browser_identity(
+                profile_path=self._settings.avito_browser_profile_path,
+                current=previous,
+            )
+        await self._close_browser_network()
+        current = self._ensure_browser_identity()
+        logger.warning(
+            "Личность Chromium %s после блокировки (%s): %s -> %s; "
+            "cookies и хранилища Avito очищены",
+            "заменена" if current.identity_id != previous.identity_id else "сохранена",
+            reason,
+            previous.identity_id,
+            current.identity_id,
+        )
+
     async def _close_browser_network(self) -> None:
         if self._proxy_session is not None and not self._proxy_session.closed:
             await self._proxy_session.close()
@@ -887,7 +971,7 @@ class AvitoClient:
 
     async def _rotate_avito_proxy(self, rotation_number: int) -> None:
         previous_route = _proxy_label(self._avito_proxies.current)
-        await self._close_browser_network()
+        await self._replace_blocked_browser_identity("смена IP")
         await self._call_proxy_change_url()
         next_proxy = self._avito_proxies.rotate()
         delay = self._settings.avito_proxy_rotation_delay_seconds
@@ -912,6 +996,7 @@ class AvitoClient:
         if self._curl_session is not None:
             return self._curl_session
 
+        identity = self._ensure_browser_identity()
         proxies: dict[str, str] | None = None
         proxy_url = self._avito_proxies.current
         if proxy_url is not None:
@@ -920,7 +1005,8 @@ class AvitoClient:
                 "https": proxy_url,
             }
         self._curl_session = CurlAsyncSession(
-            impersonate=self._settings.avito_http_impersonate,
+            impersonate=identity.impersonate,
+            headers=identity.http_headers,
             timeout=self._settings.request_timeout_seconds,
             trust_env=False,
             proxies=proxies,
@@ -930,22 +1016,65 @@ class AvitoClient:
     async def _sync_browser_cookies_to_curl(self, session: CurlAsyncSession) -> None:
         assert self._browser_context is not None
         browser_cookies = await self._browser_context.cookies([AVITO_BASE_URL])
+        session.cookies.clear()
+        synchronized = 0
         for cookie in browser_cookies:
             expires_value = cookie.get("expires")
-            expires = (
-                int(expires_value)
-                if isinstance(expires_value, (int, float)) and expires_value > 0
-                else None
-            )
+            if (
+                isinstance(expires_value, (int, float))
+                and expires_value > 0
+                and expires_value <= time.time()
+            ):
+                continue
             session.cookies.set(
                 cookie["name"],
                 cookie["value"],
                 domain=cookie.get("domain") or ".avito.ru",
                 path=cookie.get("path") or "/",
                 secure=bool(cookie.get("secure")),
-                expires=expires,
             )
-        logger.debug("В HTTP-сессию Avito синхронизировано cookies: %s", len(browser_cookies))
+            synchronized += 1
+        logger.info(
+            "Cookies Chromium -> HTTP синхронизированы: %s, identity=%s",
+            synchronized,
+            self._ensure_browser_identity().identity_id,
+        )
+
+    async def _sync_curl_cookies_to_browser(self, session: CurlAsyncSession) -> None:
+        if self._browser_context is None:
+            return
+        browser_cookies: list[dict[str, object]] = []
+        now = time.time()
+        for cookie in session.cookies.jar:
+            domain = (cookie.domain or ".avito.ru").lower()
+            hostname = domain.lstrip(".")
+            if hostname != "avito.ru" and not hostname.endswith(".avito.ru"):
+                continue
+            if cookie.expires is not None and cookie.expires <= now:
+                continue
+            browser_cookie: dict[str, object] = {
+                "name": cookie.name,
+                "value": cookie.value,
+                "domain": domain,
+                "path": cookie.path or "/",
+                "secure": bool(cookie.secure),
+                "httpOnly": cookie.has_nonstandard_attr("HttpOnly"),
+            }
+            if cookie.expires is not None and cookie.expires > 0:
+                browser_cookie["expires"] = float(cookie.expires)
+            browser_cookies.append(browser_cookie)
+        if not browser_cookies:
+            return
+        try:
+            await self._browser_context.add_cookies(browser_cookies)
+        except PlaywrightError as exc:
+            logger.warning("Не удалось вернуть обновлённые cookies в Chromium: %s", exc)
+            return
+        logger.info(
+            "Cookies HTTP -> Chromium синхронизированы: %s, identity=%s",
+            len(browser_cookies),
+            self._ensure_browser_identity().identity_id,
+        )
 
     async def _request_api_page(
         self,
@@ -976,6 +1105,7 @@ class AvitoClient:
                     },
                     allow_redirects=True,
                 )
+                await self._sync_curl_cookies_to_browser(session)
                 if response.status_code in AVITO_BLOCK_HTTP_STATUSES:
                     raise AvitoBlockedError(
                         f"JSON-пагинация Avito вернула HTTP {response.status_code}"
@@ -1155,31 +1285,6 @@ class AvitoClient:
             logger.info("Avito: %s успешно загружена без ожидания", page_name)
             return status, html, False
 
-        if (
-            _is_hard_ip_block_page(html, page.url)
-            and self._proxy_rotation_available()
-        ):
-            logger.warning(
-                "Avito показал жёсткую блокировку IP (%s, URL %s); "
-                "переключаю IP немедленно, без ожидания и reload",
-                page_name,
-                page.url,
-            )
-            blocked_error = AvitoBlockedError(
-                f"Avito заблокировал текущий IP: {page_name}",
-                retry_after_seconds=0,
-            )
-            if on_blocked is not None:
-                try:
-                    await on_blocked(blocked_error)
-                except Exception:
-                    logger.exception(
-                        "Не удалось отправить уведомление о немедленной смене IP Avito"
-                    )
-            raise _AvitoProxyRotationRequired(
-                "Avito показал страницу #block; требуется немедленная смена IP"
-            )
-
         diagnostic_path: Path | None = None
         block_notified = False
         reload_number = 0
@@ -1212,9 +1317,12 @@ class AvitoClient:
                         )
 
             reload_number += 1
-            delay = self._settings.avito_page_reload_delay_seconds
+            delay = self._settings.avito_page_reload_delay_seconds + random.uniform(
+                0,
+                self._settings.avito_page_reload_jitter_seconds,
+            )
             logger.info(
-                "Avito: %s вернула ошибку; повторное обновление %s через %s с",
+                "Avito: %s вернула ошибку; повторное обновление %s через %.1f с",
                 page_name,
                 reload_number,
                 delay,
@@ -1260,6 +1368,10 @@ class AvitoClient:
                         f"Avito не открылся после {reload_number} перезагрузок; "
                         "требуется сменить IP",
                         diagnostic_path=diagnostic_path,
+                    )
+                if block_notified:
+                    await self._replace_blocked_browser_identity(
+                        "блокировка без доступной смены IP"
                     )
                 self._start_cooldown()
                 cooldown = self._settings.avito_cooldown_seconds

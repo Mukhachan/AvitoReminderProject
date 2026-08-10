@@ -17,6 +17,7 @@ from .avito import (
     parse_search_html,
     resolve_chromium_executable,
 )
+from .browser_identity import resolve_http_impersonate
 from .config import load_settings
 from .database import Database
 from .telegram_transport import create_telegram_session
@@ -90,8 +91,22 @@ async def doctor(live: bool, telegram: bool, query: str, city: str) -> int:
             "Avito Chromium:",
             resolve_chromium_executable(settings) or "Playwright bundled Chromium",
         )
+        print(
+            "Avito browser stealth:",
+            "enabled" if settings.avito_browser_stealth else "disabled",
+        )
+        print(
+            "Avito identity rotation on block:",
+            "enabled" if settings.avito_identity_rotate_on_block else "disabled",
+        )
     if settings.avito_transport == "hybrid":
-        print("Avito HTTP fingerprint:", settings.avito_http_impersonate)
+        print(
+            "Avito HTTP fingerprint:",
+            resolve_http_impersonate(
+                settings.user_agent,
+                settings.avito_http_impersonate,
+            ),
+        )
         print("Avito API page limit:", settings.avito_api_max_pages)
     url = build_search_url(query, city)
     async with AvitoClient(settings) as client:
