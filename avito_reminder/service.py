@@ -7,14 +7,14 @@ from contextlib import suppress
 from dataclasses import dataclass
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LinkPreviewOptions,
 )
 
-from .avito import AvitoBlockedError, AvitoClient, AvitoError
+from .avito import AvitoBlockedError, AvitoCaptchaRequiredError, AvitoClient, AvitoError
 from .config import Settings
 from .database import Database
 from .models import AvitoItem, Search
@@ -36,7 +36,6 @@ def format_price(price: int | None) -> str:
 
 def item_message(search: Search, item: AvitoItem) -> str:
     parts = [
-        f"🔔 <b>Новое объявление по поиску #{search.id}</b>",
         f"<b>{html.escape(item.title)}</b>",
         html.escape(format_price(item.price)),
     ]
@@ -131,10 +130,24 @@ class MonitorService:
         wait_min = self.settings.avito_page_reload_delay_seconds
         wait_max = wait_min + self.settings.avito_page_reload_jitter_seconds
         wait_text = str(wait_min) if wait_min == wait_max else f"{wait_min}–{wait_max}"
-        text = (
-            f"⏳ <b>Поиск #{search.id}: Avito ограничил доступ.</b>\n"
-            f"Обновление через {wait_text} секунд. {next_action}"
-        )
+        if isinstance(_exc, AvitoCaptchaRequiredError):
+            browser_hint = (
+                "Откройте окно Chromium на Raspberry Pi"
+                if not self.settings.avito_browser_headless
+                else "Остановите сервис командой <code>bash service.sh stop</code>, "
+                "затем запустите видимый Chromium: "
+                "<code>.venv/bin/python -m avito_reminder.cli --setup-browser</code>"
+            )
+            text = (
+                f"🧩 <b>Поиск #{search.id}: Avito просит пройти проверку.</b>\n"
+                f"{browser_hint} и нажмите «Нажмите для подтверждения». "
+                f"Парсер подождёт {wait_text} секунд и обновит страницу."
+            )
+        else:
+            text = (
+                f"⏳ <b>Поиск #{search.id}: Avito ограничил доступ.</b>\n"
+                f"Обновление через {wait_text} секунд. {next_action}"
+            )
         try:
             try:
                 await self.bot.send_message(search.chat_id, text)
@@ -155,24 +168,43 @@ class MonitorService:
                 inline_keyboard=[[InlineKeyboardButton(text="Открыть на Avito", url=item.url)]]
             )
             try:
-                await self.bot.send_message(
-                    chat_id=search.chat_id,
-                    text=item_message(search, item),
-                    reply_markup=keyboard,
-                    link_preview_options=LinkPreviewOptions(is_disabled=True),
-                )
+                await self._send_item_notification(search, item, keyboard)
             except TelegramRetryAfter as exc:
                 await asyncio.sleep(exc.retry_after)
-                await self.bot.send_message(
-                    chat_id=search.chat_id,
-                    text=item_message(search, item),
-                    reply_markup=keyboard,
-                    link_preview_options=LinkPreviewOptions(is_disabled=True),
-                )
+                await self._send_item_notification(search, item, keyboard)
             await self.database.mark_notified(search.id, item.id)
             sent += 1
             await asyncio.sleep(0.15)
         return sent
+
+    async def _send_item_notification(
+        self,
+        search: Search,
+        item: AvitoItem,
+        keyboard: InlineKeyboardMarkup,
+    ) -> None:
+        text = item_message(search, item)
+        if item.image_url:
+            try:
+                await self.bot.send_photo(
+                    chat_id=search.chat_id,
+                    photo=item.image_url,
+                    caption=text,
+                    reply_markup=keyboard,
+                )
+                return
+            except TelegramBadRequest as exc:
+                logger.warning(
+                    "Telegram не смог загрузить фото объявления %s; отправляю текст: %s",
+                    item.id,
+                    exc,
+                )
+        await self.bot.send_message(
+            chat_id=search.chat_id,
+            text=text,
+            reply_markup=keyboard,
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+        )
 
     async def _handle_avito_error(self, search: Search, exc: AvitoError) -> None:
         blocked = isinstance(exc, AvitoBlockedError)

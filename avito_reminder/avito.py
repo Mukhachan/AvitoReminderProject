@@ -54,12 +54,16 @@ logger = logging.getLogger(__name__)
 AVITO_BASE_URL = "https://www.avito.ru"
 PUBLIC_IP_CHECK_URL = "https://api.ipify.org?format=json"
 AVITO_BLOCK_HTTP_STATUSES = frozenset({401, 403, 429})
-AVITO_BLOCK_MARKERS = (
-    "доступ ограничен: проблема с ip",
+AVITO_CAPTCHA_MARKERS = (
+    "нажмите для подтверждения",
     "продолжить для решения капчи",
     'data-marker="captcha"',
     "captcha challenge",
+)
+AVITO_BLOCK_MARKERS = (
+    "доступ ограничен: проблема с ip",
     "too many requests",
+    *AVITO_CAPTCHA_MARKERS,
 )
 AVITO_SITE_DATA_CLEAR_SCRIPT = """
 async () => {
@@ -80,6 +84,11 @@ async () => {
 def _is_blocked_html(html: str) -> bool:
     lowered = html.lower()
     return any(marker in lowered for marker in AVITO_BLOCK_MARKERS)
+
+
+def _is_captcha_html(html: str) -> bool:
+    lowered = html.lower()
+    return any(marker in lowered for marker in AVITO_CAPTCHA_MARKERS)
 
 
 def _is_blocked_page(status: int | None, html: str) -> bool:
@@ -138,6 +147,10 @@ class AvitoNetworkError(AvitoError):
 
 class AvitoBlockedError(AvitoError):
     """Avito requested a captcha or blocked the current IP."""
+
+
+class AvitoCaptchaRequiredError(AvitoBlockedError):
+    """Avito requires a user to complete the visible confirmation challenge."""
 
 
 class AvitoParseError(AvitoError):
@@ -1287,6 +1300,7 @@ class AvitoClient:
 
         diagnostic_path: Path | None = None
         block_notified = False
+        captcha_notified = False
         reload_number = 0
         reload_limit = (
             self._settings.avito_proxy_rotate_after_reloads
@@ -1294,19 +1308,35 @@ class AvitoClient:
             else self._settings.avito_error_reload_attempts
         )
         while True:
-            if _is_blocked_page(status, html) and not block_notified:
-                diagnostic_path = await self._save_browser_diagnostic(page, status)
+            is_captcha = _is_captcha_html(html)
+            should_notify = not block_notified or (is_captcha and not captcha_notified)
+            if _is_blocked_page(status, html) and should_notify:
+                if diagnostic_path is None:
+                    diagnostic_path = await self._save_browser_diagnostic(page, status)
                 logger.warning(
-                    "Avito ограничил доступ (%s, HTTP %s). "
-                    "Вкладка останется открытой. Первый снимок: %s",
+                    (
+                        "Avito запросил подтверждение пользователя (%s, HTTP %s). "
+                        if is_captcha
+                        else "Avito ограничил доступ (%s, HTTP %s). "
+                    )
+                    + "Вкладка останется открытой. Первый снимок: %s",
                     page_name,
                     status,
                     diagnostic_path or "не сохранён",
                 )
                 block_notified = True
+                captcha_notified = captcha_notified or is_captcha
                 if on_blocked is not None:
-                    blocked_error = AvitoBlockedError(
-                        f"Avito ограничил доступ: {page_name}, HTTP {status}",
+                    error_type = (
+                        AvitoCaptchaRequiredError if is_captcha else AvitoBlockedError
+                    )
+                    blocked_error = error_type(
+                        (
+                            f"Avito просит нажать кнопку подтверждения: {page_name}, "
+                            f"HTTP {status}"
+                            if is_captcha
+                            else f"Avito ограничил доступ: {page_name}, HTTP {status}"
+                        ),
                         diagnostic_path=diagnostic_path,
                     )
                     try:

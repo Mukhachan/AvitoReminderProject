@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime
 
-from avito_reminder.avito import AvitoBlockedError
+from avito_reminder.avito import AvitoBlockedError, AvitoCaptchaRequiredError
 from avito_reminder.database import Database
 from avito_reminder.models import AvitoItem
 from avito_reminder.service import MonitorService
@@ -28,6 +28,7 @@ class FakeClient:
                 title="Новый телефон",
                 price=40_000,
                 url="https://www.avito.ru/moskva/telefony/telefon_1234567890",
+                image_url="https://images.example.test/telefon.jpg",
             )
         ]
 
@@ -73,8 +74,11 @@ def test_monitor_sends_new_item_once(tmp_path) -> None:
         assert refreshed is not None
         second = await service.check_search(refreshed)
         assert (second.new, second.sent) == (0, 0)
-        assert len(bot.messages) == 1
-        assert "Новый телефон" in bot.messages[0][1]
+        assert bot.messages == []
+        assert len(bot.photos) == 1
+        assert bot.photos[0][1] == "https://images.example.test/telefon.jpg"
+        assert "Новый телефон" in bot.photos[0][2]
+        assert "Новое объявление по поиску" not in bot.photos[0][2]
 
     asyncio.run(scenario())
 
@@ -144,5 +148,46 @@ def test_monitor_reports_avito_error_without_sending_screenshot(tmp_path) -> Non
         assert result.error == "Chromium получил от Avito HTTP 403"
         assert len(bot.messages) == 1
         assert bot.photos == []
+
+    asyncio.run(scenario())
+
+
+def test_monitor_tells_user_to_complete_visible_captcha(tmp_path) -> None:
+    async def scenario() -> None:
+        cfg = settings(
+            tmp_path / "service.db",
+            avito_browser_headless=False,
+            avito_page_reload_delay_seconds=90,
+            avito_page_reload_jitter_seconds=30,
+        )
+        database = Database(cfg.database_path)
+        await database.initialize()
+        search = await database.add_search(
+            chat_id=10,
+            user_id=20,
+            query="книги Мураками",
+            city="Москва",
+            price_min=None,
+            price_max=None,
+            url="https://www.avito.ru/moskva?q=мураками",
+        )
+        bot = FakeBot()
+        service = MonitorService(
+            bot=bot,  # type: ignore[arg-type]
+            database=database,
+            client=FakeClient(),  # type: ignore[arg-type]
+            settings=cfg,
+        )
+
+        await service._notify_avito_waiting(
+            search,
+            AvitoCaptchaRequiredError("Нажмите для подтверждения"),
+        )
+
+        assert len(bot.messages) == 1
+        message = bot.messages[0][1]
+        assert "Avito просит пройти проверку" in message
+        assert "Нажмите для подтверждения" in message
+        assert "90–120 секунд" in message
 
     asyncio.run(scenario())

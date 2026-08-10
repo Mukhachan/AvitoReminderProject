@@ -11,6 +11,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from avito_reminder.avito import (
     AvitoBlockedError,
+    AvitoCaptchaRequiredError,
     AvitoClient,
     AvitoError,
     AvitoNetworkError,
@@ -691,6 +692,47 @@ def test_browser_waits_and_reloads_until_avito_access_returns(tmp_path, monkeypa
     assert delays == [90, 90]
     assert len(block_notifications) == 1
     assert block_notifications[0].diagnostic_path == tmp_path / "blocked.png"
+
+
+def test_captcha_page_reports_user_confirmation_before_reload(tmp_path, monkeypatch) -> None:
+    captcha_html = "<button>Нажмите для подтверждения</button>"
+    ready_html = "<html><title>Avito</title><main>Главная</main></html>"
+    page = ReloadingPageStub([(200, ready_html)])
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+            avito_page_reload_delay_seconds=90,
+        )
+    )
+    notifications: list[AvitoBlockedError] = []
+
+    async def fake_sleep(_delay: float) -> None:
+        return None
+
+    async def fake_diagnostic(*_args, **_kwargs):
+        return tmp_path / "captcha.png"
+
+    async def on_blocked(exc: AvitoBlockedError) -> None:
+        notifications.append(exc)
+
+    monkeypatch.setattr("avito_reminder.avito.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(client, "_save_browser_diagnostic", fake_diagnostic)
+
+    result = asyncio.run(
+        client._wait_then_reload_avito_page(
+            page,  # type: ignore[arg-type]
+            status=200,
+            html=captcha_html,
+            page_name="главная страница",
+            on_blocked=on_blocked,
+        )
+    )
+
+    assert result == (200, ready_html, True)
+    assert page.reload_count == 1
+    assert len(notifications) == 1
+    assert isinstance(notifications[0], AvitoCaptchaRequiredError)
 
 
 def test_browser_continues_without_wait_or_reload_when_page_opened_normally(
