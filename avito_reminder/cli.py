@@ -99,6 +99,20 @@ async def doctor(live: bool, telegram: bool, query: str, city: str) -> int:
             "Avito identity rotation on block:",
             "enabled" if settings.avito_identity_rotate_on_block else "disabled",
         )
+        print(
+            "Avito new user per browser session:",
+            "enabled" if settings.avito_new_user_per_session else "disabled",
+        )
+        print(
+            "Avito new identity on Chromium start:",
+            "enabled"
+            if settings.avito_identity_rotate_on_browser_start
+            else "disabled",
+        )
+        print(
+            "Avito proxy rotation on Chromium restart:",
+            "enabled" if settings.avito_proxy_rotate_on_browser_start else "disabled",
+        )
     if settings.avito_transport == "hybrid":
         print(
             "Avito HTTP fingerprint:",

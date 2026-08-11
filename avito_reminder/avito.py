@@ -42,9 +42,8 @@ from .avito_mfe import (
 )
 from .browser_identity import (
     BrowserIdentity,
-    load_browser_identity,
+    generate_browser_identity,
     resolve_http_impersonate,
-    rotate_browser_identity,
 )
 from .browser_sessions import (
     BrowserIdentityManager,
@@ -477,6 +476,10 @@ class AvitoClient:
         self._browser_context: BrowserContext | None = None
         self._browser_session: BrowserSession | None = None
         self._browser_identity: BrowserIdentity | None = None
+        self._browser_launches = 0
+        self._browser_sessions_started = 0
+        self._identity_prepared_for_browser_start = False
+        self._proxy_prepared_for_browser_start = False
         self._browser_lock = asyncio.Lock()
         self._browser_warmed_up = False
         self._last_browser_request_at: float | None = None
@@ -489,14 +492,66 @@ class AvitoClient:
                 self._settings.user_agent,
                 self._settings.avito_http_impersonate,
             )
-            self._browser_identity = load_browser_identity(
-                profile_path=self._settings.avito_browser_profile_path,
+            self._browser_identity = generate_browser_identity(
                 user_agent=self._settings.user_agent,
                 impersonate=impersonate,
                 locale=self._settings.avito_browser_locale,
                 timezone_id=self._settings.avito_browser_timezone,
             )
         return self._browser_identity
+
+    def _generate_next_browser_identity(self) -> BrowserIdentity:
+        previous = self._browser_identity
+        if previous is None:
+            return self._ensure_browser_identity()
+        self._browser_identity = generate_browser_identity(
+            user_agent=previous.user_agent,
+            impersonate=previous.impersonate,
+            locale=previous.locale,
+            timezone_id=previous.timezone_id,
+            previous=previous,
+        )
+        return self._browser_identity
+
+    async def _prepare_browser_start(self) -> BrowserIdentity:
+        if self._browser_launches > 0:
+            if (
+                self._settings.avito_identity_rotate_on_browser_start
+                and not self._identity_prepared_for_browser_start
+            ):
+                self._generate_next_browser_identity()
+            if (
+                self._settings.avito_proxy_rotate_on_browser_start
+                and self._proxy_rotation_available()
+                and not self._proxy_prepared_for_browser_start
+            ):
+                previous_route = _proxy_label(self._avito_proxies.current)
+                await self._call_proxy_change_url()
+                next_proxy = self._avito_proxies.rotate()
+                delay = self._settings.avito_proxy_rotation_delay_seconds
+                logger.info(
+                    "Новый маршрут для перезапуска Chromium: %s -> %s; ожидание %s с",
+                    previous_route,
+                    _proxy_label(next_proxy),
+                    delay,
+                )
+                if delay:
+                    await asyncio.sleep(delay)
+        self._identity_prepared_for_browser_start = False
+        self._proxy_prepared_for_browser_start = False
+        return self._ensure_browser_identity()
+
+    async def _prepare_new_user_session(self) -> None:
+        if (
+            not self._settings.avito_new_user_per_session
+            or self._browser_sessions_started == 0
+        ):
+            return
+        logger.info(
+            "Подготовка нового пользователя Chromium: предыдущих сессий=%s",
+            self._browser_sessions_started,
+        )
+        await self._close_browser_network()
 
     async def __aenter__(self) -> AvitoClient:
         await self.start()
@@ -534,7 +589,7 @@ class AvitoClient:
         if self._browser is not None:
             return
 
-        identity = self._ensure_browser_identity()
+        identity = await self._prepare_browser_start()
         executable_path = resolve_chromium_executable(self._settings)
         proxy_url = self._avito_proxies.current
         browser_args = [
@@ -563,6 +618,7 @@ class AvitoClient:
                 f"Не удалось запустить Chromium ({executable_hint}): {exc}"
             ) from exc
         self._browser = browser
+        self._browser_launches += 1
         browser.on("disconnected", lambda *_args: self._mark_browser_closed(browser))
 
         logger.info(
@@ -589,6 +645,7 @@ class AvitoClient:
             stealth=self._settings.avito_browser_stealth,
         )
         session = await manager.create_session(self._ensure_browser_identity())
+        self._browser_sessions_started += 1
         self._browser_session = session
         self._browser_context = session.context
         session.context.on(
@@ -777,10 +834,17 @@ class AvitoClient:
         async with self._browser_lock:
             self._raise_if_cooling_down()
             await self._wait_for_browser_slot()
+            await self._prepare_new_user_session()
             rotations = 0
             browser_restarts = 0
             while True:
                 await self._start_browser()
+                route_kind = "proxy" if self._avito_proxies.current else "direct"
+                self.last_route = (
+                    f"chromium+curl-{route_kind}"
+                    if self._settings.avito_transport == "hybrid"
+                    else f"chromium-{route_kind}"
+                )
                 await self._start_browser_session()
                 try:
                     return await self._search_browser_with_current_proxy(
@@ -997,10 +1061,8 @@ class AvitoClient:
             self._curl_session.cookies.clear()
 
         if self._settings.avito_identity_rotate_on_block:
-            self._browser_identity = rotate_browser_identity(
-                profile_path=self._settings.avito_browser_profile_path,
-                current=previous,
-            )
+            self._generate_next_browser_identity()
+            self._identity_prepared_for_browser_start = True
         await self._close_browser_network()
         current = self._ensure_browser_identity()
         logger.warning(
@@ -1056,6 +1118,7 @@ class AvitoClient:
         await self._replace_blocked_browser_identity("смена IP")
         await self._call_proxy_change_url()
         next_proxy = self._avito_proxies.rotate()
+        self._proxy_prepared_for_browser_start = True
         delay = self._settings.avito_proxy_rotation_delay_seconds
         logger.warning(
             "Avito: смена IP %s/%s, маршрут %s -> %s; ожидание %s с",
@@ -1501,6 +1564,7 @@ class AvitoClient:
 
     async def open_manual_verification_page(self, url: str) -> tuple[Page, int | None, int | None]:
         """Open Avito in a temporary session for user-completed verification."""
+        await self._prepare_new_user_session()
         await self._start_browser()
         await self._start_browser_session()
         assert self._browser_context is not None

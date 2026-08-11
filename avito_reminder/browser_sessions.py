@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncIterator, Mapping
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from playwright.async_api import Browser, BrowserContext, Page
+from playwright.async_api import Error as PlaywrightError
 
 from .browser_identity import BrowserIdentity, stealth_init_script
 
@@ -159,10 +160,15 @@ class BrowserIdentityManager:
             accept_downloads=False,
             service_workers="allow",
         )
-        await context.set_extra_http_headers(identity.http_headers)
-        if self.stealth:
-            await context.add_init_script(script=stealth_init_script(identity))
-        page = await context.new_page()
+        try:
+            await context.set_extra_http_headers(identity.http_headers)
+            if self.stealth:
+                await context.add_init_script(script=stealth_init_script(identity))
+            page = await context.new_page()
+        except BaseException:
+            with suppress(PlaywrightError):
+                await context.close()
+            raise
         session = BrowserSession(
             session_id=str(uuid4()),
             context=context,
@@ -185,5 +191,6 @@ class BrowserIdentityManager:
         try:
             yield session
         finally:
-            await session.context.close()
+            with suppress(PlaywrightError):
+                await session.context.close()
             logger.info("Изолированная Chromium-сессия закрыта: session=%s", session.session_id)

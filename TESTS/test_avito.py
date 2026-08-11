@@ -29,6 +29,7 @@ from avito_reminder.avito_mfe import (
     extract_page_state,
     parse_api_response,
 )
+from avito_reminder.browser_identity import load_browser_identity
 from avito_reminder.models import AvitoItem
 
 from .helpers import settings
@@ -576,6 +577,87 @@ def test_browser_launch_uses_one_coherent_identity(tmp_path, monkeypatch) -> Non
     assert "--disable-blink-features=AutomationControlled" in launcher.options["args"]
     assert context.init_scripts
     assert "Navigator.prototype, 'webdriver'" in context.init_scripts[0]
+
+
+def test_next_browser_session_gets_new_process_identity_and_proxy(
+    tmp_path, monkeypatch
+) -> None:
+    first_proxy = "http://user:password@first.proxy.test:1000"
+    second_proxy = "http://user:password@second.proxy.test:1000"
+    context = BrowserLaunchContextStub()
+    launcher = ChromiumLauncherStub(context)
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+            avito_proxy_mode="proxy",
+            avito_proxy_pool=(first_proxy, second_proxy),
+            avito_proxy_rotation_enabled=True,
+            avito_proxy_rotation_delay_seconds=0,
+            avito_log_public_ip=False,
+        )
+    )
+    client._playwright = SimpleNamespace(chromium=launcher)  # type: ignore[assignment]
+    monkeypatch.setattr("avito_reminder.avito.resolve_chromium_executable", lambda _settings: None)
+
+    asyncio.run(client._start_browser())
+    first_identity = client._ensure_browser_identity()
+    first_route = client._avito_proxies.current
+    client._browser_sessions_started = 1
+    network_closes = 0
+
+    async def fake_close_browser_network() -> None:
+        nonlocal network_closes
+        network_closes += 1
+        client._browser = None
+
+    monkeypatch.setattr(client, "_close_browser_network", fake_close_browser_network)
+
+    asyncio.run(client._prepare_new_user_session())
+    asyncio.run(client._start_browser())
+    second_identity = client._ensure_browser_identity()
+    second_route = client._avito_proxies.current
+
+    assert network_closes == 1
+    assert second_identity.identity_id != first_identity.identity_id
+    assert (second_identity.viewport_width, second_identity.viewport_height) != (
+        first_identity.viewport_width,
+        first_identity.viewport_height,
+    )
+    assert second_route != first_route
+
+
+def test_new_user_session_rotation_can_be_disabled(tmp_path, monkeypatch) -> None:
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+            avito_new_user_per_session=False,
+        )
+    )
+    client._browser_sessions_started = 1
+
+    async def unexpected_close() -> None:
+        raise AssertionError("браузер не должен перезапускаться")
+
+    monkeypatch.setattr(client, "_close_browser_network", unexpected_close)
+
+    asyncio.run(client._prepare_new_user_session())
+
+
+def test_client_ignores_saved_identity_json(tmp_path) -> None:
+    client_settings = settings(tmp_path / "test.db", avito_transport="browser")
+    saved = load_browser_identity(
+        profile_path=client_settings.avito_browser_profile_path,
+        user_agent=client_settings.user_agent,
+        impersonate="chrome",
+        locale=client_settings.avito_browser_locale,
+        timezone_id=client_settings.avito_browser_timezone,
+    )
+
+    current = AvitoClient(client_settings)._ensure_browser_identity()
+
+    assert current.identity_id != saved.identity_id
 
 
 @pytest.mark.filterwarnings("ignore::curl_cffi.utils.CurlCffiWarning")

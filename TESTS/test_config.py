@@ -20,6 +20,9 @@ def test_settings_split_telegram_and_avito_proxies(monkeypatch) -> None:
     monkeypatch.setenv("AVITO_BROWSER_PROFILE_PATH", "data/test-browser-profile")
     monkeypatch.setenv("AVITO_BROWSER_STEALTH", "true")
     monkeypatch.setenv("AVITO_IDENTITY_ROTATE_ON_BLOCK", "true")
+    monkeypatch.setenv("AVITO_NEW_USER_PER_SESSION", "true")
+    monkeypatch.setenv("AVITO_IDENTITY_ROTATE_ON_BROWSER_START", "true")
+    monkeypatch.setenv("AVITO_PROXY_ROTATE_ON_BROWSER_START", "true")
     monkeypatch.setenv("AVITO_BROWSER_LOCALE", "ru-RU")
     monkeypatch.setenv("AVITO_BROWSER_TIMEZONE", "Europe/Moscow")
     monkeypatch.setenv("AVITO_MIN_REQUEST_INTERVAL_SECONDS", "25")
@@ -43,6 +46,9 @@ def test_settings_split_telegram_and_avito_proxies(monkeypatch) -> None:
     assert settings.avito_browser_profile_path.as_posix() == "data/test-browser-profile"
     assert settings.avito_browser_stealth is True
     assert settings.avito_identity_rotate_on_block is True
+    assert settings.avito_new_user_per_session is True
+    assert settings.avito_identity_rotate_on_browser_start is True
+    assert settings.avito_proxy_rotate_on_browser_start is True
     assert settings.avito_browser_locale == "ru-RU"
     assert settings.avito_browser_timezone == "Europe/Moscow"
     assert settings.avito_min_request_interval_seconds == 25

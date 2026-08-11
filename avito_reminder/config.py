@@ -120,6 +120,9 @@ class Settings:
     avito_browser_stealth: bool
     avito_browser_snapshots: bool
     avito_identity_rotate_on_block: bool
+    avito_new_user_per_session: bool
+    avito_identity_rotate_on_browser_start: bool
+    avito_proxy_rotate_on_browser_start: bool
     avito_browser_locale: str
     avito_browser_timezone: str
     avito_min_request_interval_seconds: int
@@ -206,6 +209,15 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
         ),
         avito_identity_rotate_on_block=_as_bool(
             os.getenv("AVITO_IDENTITY_ROTATE_ON_BLOCK"), True
+        ),
+        avito_new_user_per_session=_as_bool(
+            os.getenv("AVITO_NEW_USER_PER_SESSION"), True
+        ),
+        avito_identity_rotate_on_browser_start=_as_bool(
+            os.getenv("AVITO_IDENTITY_ROTATE_ON_BROWSER_START"), True
+        ),
+        avito_proxy_rotate_on_browser_start=_as_bool(
+            os.getenv("AVITO_PROXY_ROTATE_ON_BROWSER_START"), True
         ),
         avito_browser_locale=os.getenv("AVITO_BROWSER_LOCALE", "ru-RU").strip()
         or "ru-RU",

@@ -1,6 +1,8 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from avito_reminder.browser_identity import generate_browser_identity
 from avito_reminder.browser_sessions import (
     BrowserIdentityManager,
@@ -36,6 +38,19 @@ class BrowserStub:
 
     async def new_context(self, **options):
         context = ContextStub()
+        self.contexts.append(context)
+        self.options.append(options)
+        return context
+
+
+class FailingContextStub(ContextStub):
+    async def add_init_script(self, *, script):
+        raise RuntimeError("init script failed")
+
+
+class FailingBrowserStub(BrowserStub):
+    async def new_context(self, **options):
+        context = FailingContextStub()
         self.contexts.append(context)
         self.options.append(options)
         return context
@@ -84,6 +99,16 @@ def test_snapshot_diff_reports_nested_paths() -> None:
         "viewport.height",
         "viewport.width",
     ]
+
+
+def test_manager_closes_context_when_session_initialization_fails() -> None:
+    browser = FailingBrowserStub()
+    manager = BrowserIdentityManager(browser, stealth=True)  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError, match="init script failed"):
+        asyncio.run(manager.create_session(_identity()))
+
+    assert browser.contexts[0].closed is True
 
 
 def test_storage_leak_audit_detects_only_previous_session_markers() -> None:
