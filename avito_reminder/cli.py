@@ -147,8 +147,8 @@ async def browser_setup(query: str, city: str) -> int:
             except AvitoError as exc:
                 print("Проверка профиля: FAIL -", exc)
                 return 2
-            print(f"Проверка профиля: OK, распознано объявлений: {len(items)}")
-            print("Профиль сохранён:", settings.avito_browser_profile_path)
+            print(f"Проверка сессии: OK, распознано объявлений: {len(items)}")
+            print("Состояние временной браузерной сессии будет удалено при закрытии.")
             return 0
         finally:
             await page.close()

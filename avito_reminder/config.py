@@ -118,6 +118,7 @@ class Settings:
     avito_browser_profile_path: Path
     avito_chromium_executable: str | None
     avito_browser_stealth: bool
+    avito_browser_snapshots: bool
     avito_identity_rotate_on_block: bool
     avito_browser_locale: str
     avito_browser_timezone: str
@@ -200,6 +201,9 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
         ),
         avito_chromium_executable=os.getenv("AVITO_CHROMIUM_EXECUTABLE") or None,
         avito_browser_stealth=_as_bool(os.getenv("AVITO_BROWSER_STEALTH"), True),
+        avito_browser_snapshots=_as_bool(
+            os.getenv("AVITO_BROWSER_SNAPSHOTS"), True
+        ),
         avito_identity_rotate_on_block=_as_bool(
             os.getenv("AVITO_IDENTITY_ROTATE_ON_BLOCK"), True
         ),

@@ -13,7 +13,7 @@ Telegram-бот сохраняет параметры поиска Avito, пер
 - SQLite без отдельного сервера баз данных;
 - защита от повторной отправки объявлений;
 - повторные запросы, тайм-ауты и backoff;
-- гибридный парсинг: постоянный профиль Chromium, MFE JSON и JSON-пагинация Avito;
+- гибридный парсинг: изолированные Chromium-сессии, MFE JSON и JSON-пагинация Avito;
 - явное обнаружение блокировки IP/капчи Avito;
 - диагностика и тесты;
 - запуск напрямую или через Docker Compose.
@@ -65,6 +65,7 @@ AVITO_API_MAX_PAGES=3
 AVITO_BROWSER_HEADLESS=true
 AVITO_BROWSER_PROFILE_PATH=data/chromium-profile
 AVITO_BROWSER_STEALTH=true
+AVITO_BROWSER_SNAPSHOTS=true
 AVITO_IDENTITY_ROTATE_ON_BLOCK=true
 AVITO_BROWSER_LOCALE=ru-RU
 AVITO_BROWSER_TIMEZONE=Europe/Moscow
@@ -85,10 +86,11 @@ AVITO_PROXY_RDNS=true
 
 Telegram всегда работает через Naive/SOCKS5. Avito открывается установленным Chromium через
 обычное подключение Raspberry Pi, а внешний прокси подключается только после подтверждённой
-блокировки. Профиль Chromium и согласованная browser identity сохраняются между обычными
-запусками в `data/chromium-profile`.
-Перед выдачей браузер открывает `https://www.avito.ru/`,
-а затем переходит на поисковую ссылку в той же вкладке с cookies и referer главной страницы.
+блокировки. В `data/chromium-profile` сохраняется только согласованная browser identity.
+Каждая логическая проверка получает новый `BrowserContext` без cookies, local/session storage,
+IndexedDB, Cache Storage и Service Workers предыдущей проверки. Перед выдачей браузер открывает
+`https://www.avito.ru/`, а затем переходит на поисковую ссылку в той же временной сессии с referer
+главной страницы. По окончании проверки контекст закрывается и его состояние отбрасывается.
 Между последовательными поисками выдерживается глобальная пауза 60–90 секунд, поэтому несколько
 подписок не создают пачку одновременных обращений к Avito.
 
@@ -98,7 +100,7 @@ Telegram всегда работает через Naive/SOCKS5. Avito откры
 1. извлекает структурированный каталог, `searchCore` и `context` из
    `script[type="mime/invalid"][data-mfe-state="true"]`;
 2. перед JSON-запросами переносит актуальные cookies из Chromium в `curl_cffi`, а полученные
-   `Set-Cookie` возвращает обратно в постоянный профиль;
+   `Set-Cookie` возвращает в текущую изолированную сессию;
 3. при необходимости получает страницы 2–3 через `/web/1/js/items`;
 4. использует один согласованный набор User-Agent, client hints, viewport, locale и Chrome
    TLS/HTTP-отпечатка до подтверждённой блокировки;
@@ -112,6 +114,12 @@ Identity хранится в
 `data/chromium-profile/avito-browser-identity.json`; она не меняется при обычном рестарте.
 `AVITO_BROWSER_STEALTH=true` скрывает стандартные признаки Playwright и согласует JS-параметры
 с сохранённой identity. Автоматическое решение капчи не используется.
+
+`AVITO_BROWSER_SNAPSHOTS=true` сохраняет для каждой успешной проверки JSON со значениями
+`navigator`, timezone, viewport, screen, IndexedDB, Cache Storage и Service Workers в
+`data/diagnostics/browser-sessions/`. Снимки можно сравнивать функцией
+`diff_browser_snapshots` из `avito_reminder.browser_sessions`; storage-маркеры проверяются
+функциями `inspect_browser_storage` и `storage_leaks`.
 
 ### Ротация IP Avito
 
@@ -175,7 +183,7 @@ AVITO_PROXY_MODE=proxy
 парсер последовательно переключается на следующие адреса по тому же алгоритму. Вернуть
 первоначальную схему можно значением `AVITO_PROXY_MODE=fallback`.
 
-Chromium использует свою стартовую вкладку вместо создания дополнительной пустой вкладки. Если
+Chromium создаёт одну вкладку в новом изолированном контексте для каждой проверки. Если
 прокси не смог выполнить первый переход и вкладка после тайм-аута осталась `about:blank`, парсер
 не тратит время на снимок пустой страницы: сетевой контекст закрывается и сразу выбирается
 следующий IP пула. Обычный диагностический снимок ограничен пятью секундами.
@@ -186,10 +194,10 @@ Chromium про `--no-sandbox` является предупреждением �
 а не ошибкой Avito или прокси; состояние маршрута следует смотреть в журнале бота.
 
 Если пользователь закрыл видимое окно Chromium или процесс браузера аварийно завершился, бот
-сбрасывает закрытый контекст и один раз автоматически запускает Chromium заново с тем же
-профилем и текущим прокси. Перезапуск всего Telegram-бота для следующей проверки не требуется.
-Рабочая вкладка после успешного поиска не закрывается: она сохраняется и переиспользуется при
-следующей плановой проверке, чтобы вместе с последней вкладкой не завершился persistent Chromium.
+сбрасывает закрытую сессию и один раз автоматически запускает Chromium заново с той же identity
+и текущим прокси. Перезапуск всего Telegram-бота для следующей проверки не требуется. После
+успешного поиска вкладка и её `BrowserContext` закрываются; сам процесс Chromium может обслужить
+следующую проверку уже в новом чистом контексте.
 
 Если провайдер выдаёт один прокси-шлюз и отдельный секретный URL для принудительной смены IP,
 можно дополнительно задать `AVITO_PROXY_CHANGE_URL`. Парсер вызовет его непосредственно перед
@@ -270,8 +278,8 @@ bash service.sh stop
 .venv/bin/python -m avito_reminder.cli --all
 ```
 
-Если Avito показывает «Доступ ограничен: проблема с IP», остановите сервис и откройте тот же
-постоянный профиль в видимом Chromium:
+Если Avito показывает «Доступ ограничен: проблема с IP», остановите сервис и откройте временную
+видимую Chromium-сессию:
 
 ```bash
 bash service.sh stop
@@ -327,6 +335,7 @@ docker compose logs -f bot
 ## Структура
 
 - `avito_reminder/avito.py` — Chromium/HTTP-клиент, URL и управление выдачей;
+- `avito_reminder/browser_sessions.py` — фабрика изолированных сессий, snapshot и storage-аудит;
 - `avito_reminder/avito_mfe.py` — разбор MFE-состояния и внутренней JSON-пагинации;
 - `avito_reminder/database.py` — SQLite и дедупликация;
 - `avito_reminder/telegram.py` — команды и сценарий ввода;

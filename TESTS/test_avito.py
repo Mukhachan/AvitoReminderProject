@@ -192,15 +192,33 @@ class BrowserLaunchContextStub:
         assert event == "close"
         self.close_callback = callback
 
+    async def new_page(self):
+        return SimpleNamespace()
+
+
+class BrowserLaunchStub:
+    def __init__(self, context: BrowserLaunchContextStub) -> None:
+        self.context = context
+        self.context_options = None
+        self.disconnect_callback = None
+
+    async def new_context(self, **options):
+        self.context_options = options
+        return self.context
+
+    def on(self, event: str, callback) -> None:
+        assert event == "disconnected"
+        self.disconnect_callback = callback
+
 
 class ChromiumLauncherStub:
     def __init__(self, context: BrowserLaunchContextStub) -> None:
-        self.context = context
+        self.browser = BrowserLaunchStub(context)
         self.options = None
 
-    async def launch_persistent_context(self, **options):
+    async def launch(self, **options):
         self.options = options
-        return self.context
+        return self.browser
 
 
 class IdentityPageStub:
@@ -545,13 +563,15 @@ def test_browser_launch_uses_one_coherent_identity(tmp_path, monkeypatch) -> Non
     monkeypatch.setattr("avito_reminder.avito.resolve_chromium_executable", lambda _settings: None)
 
     asyncio.run(client._start_browser())
+    asyncio.run(client._start_browser_session())
 
     identity = client._ensure_browser_identity()
-    assert launcher.options["user_agent"] == identity.user_agent
-    assert launcher.options["locale"] == identity.locale
-    assert launcher.options["timezone_id"] == identity.timezone_id
-    assert launcher.options["viewport"] == identity.viewport
-    assert launcher.options["screen"] == identity.screen
+    context_options = launcher.browser.context_options
+    assert context_options["user_agent"] == identity.user_agent
+    assert context_options["locale"] == identity.locale
+    assert context_options["timezone_id"] == identity.timezone_id
+    assert context_options["viewport"] == identity.viewport
+    assert context_options["screen"] == identity.screen
     assert context.extra_http_headers == identity.http_headers
     assert "--disable-blink-features=AutomationControlled" in launcher.options["args"]
     assert context.init_scripts

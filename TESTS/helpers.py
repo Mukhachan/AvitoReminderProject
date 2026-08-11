@@ -34,6 +34,7 @@ def settings(database_path: Path, **overrides: object) -> Settings:
         "avito_browser_profile_path": database_path.parent / "chromium-profile",
         "avito_chromium_executable": None,
         "avito_browser_stealth": True,
+        "avito_browser_snapshots": True,
         "avito_identity_rotate_on_block": True,
         "avito_browser_locale": "ru-RU",
         "avito_browser_timezone": "Europe/Moscow",

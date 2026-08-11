@@ -21,6 +21,7 @@ from bs4 import BeautifulSoup, Tag
 from curl_cffi.requests import AsyncSession as CurlAsyncSession
 from curl_cffi.requests.exceptions import RequestException as CurlRequestError
 from playwright.async_api import (
+    Browser,
     BrowserContext,
     Page,
     Playwright,
@@ -44,7 +45,12 @@ from .browser_identity import (
     load_browser_identity,
     resolve_http_impersonate,
     rotate_browser_identity,
-    stealth_init_script,
+)
+from .browser_sessions import (
+    BrowserIdentityManager,
+    BrowserSession,
+    collect_browser_snapshot,
+    save_browser_snapshot,
 )
 from .config import Settings
 from .models import AvitoItem
@@ -467,7 +473,9 @@ class AvitoClient:
         self._proxy_session: aiohttp.ClientSession | None = None
         self._curl_session: CurlAsyncSession | None = None
         self._playwright: Playwright | None = None
+        self._browser: Browser | None = None
         self._browser_context: BrowserContext | None = None
+        self._browser_session: BrowserSession | None = None
         self._browser_identity: BrowserIdentity | None = None
         self._browser_lock = asyncio.Lock()
         self._browser_warmed_up = False
@@ -513,17 +521,19 @@ class AvitoClient:
         if self._browser_context is not None:
             await self._browser_context.close()
             self._browser_context = None
+            self._browser_session = None
             self._browser_warmed_up = False
+        if self._browser is not None:
+            await self._browser.close()
+            self._browser = None
         if self._playwright is not None:
             await self._playwright.stop()
             self._playwright = None
 
     async def _start_browser(self) -> None:
-        if self._browser_context is not None:
+        if self._browser is not None:
             return
 
-        profile_path = self._settings.avito_browser_profile_path
-        profile_path.mkdir(parents=True, exist_ok=True)
         identity = self._ensure_browser_identity()
         executable_path = resolve_chromium_executable(self._settings)
         proxy_url = self._avito_proxies.current
@@ -539,21 +549,10 @@ class AvitoClient:
             self._playwright = await async_playwright().start()
         playwright = self._playwright
         try:
-            browser_context = await playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_path),
+            browser = await playwright.chromium.launch(
                 executable_path=executable_path,
                 headless=self._settings.avito_browser_headless,
                 args=browser_args,
-                proxy=_playwright_proxy(proxy_url) if proxy_url else None,
-                user_agent=identity.user_agent,
-                locale=identity.locale,
-                timezone_id=identity.timezone_id,
-                viewport=identity.viewport,
-                screen=identity.screen,
-                device_scale_factor=identity.device_scale_factor,
-                is_mobile=identity.is_mobile,
-                has_touch=identity.is_mobile,
-                accept_downloads=False,
             )
         except PlaywrightError as exc:
             await playwright.stop()
@@ -563,22 +562,15 @@ class AvitoClient:
             raise AvitoNetworkError(
                 f"Не удалось запустить Chromium ({executable_hint}): {exc}"
             ) from exc
-        self._browser_context = browser_context
-        browser_context.on(
-            "close",
-            lambda *_args: self._mark_browser_context_closed(browser_context),
-        )
-        await browser_context.set_extra_http_headers(identity.http_headers)
-        if self._settings.avito_browser_stealth:
-            await browser_context.add_init_script(script=stealth_init_script(identity))
+        self._browser = browser
+        browser.on("disconnected", lambda *_args: self._mark_browser_closed(browser))
 
         logger.info(
             "Chromium для Avito запущен: route=%s, executable=%s, headless=%s, "
-            "profile=%s, identity=%s, viewport=%sx%s, impersonate=%s",
+            "session_mode=isolated, identity=%s, viewport=%sx%s, impersonate=%s",
             _proxy_label(proxy_url),
             executable_path or "playwright",
             self._settings.avito_browser_headless,
-            profile_path,
             identity.identity_id,
             identity.viewport_width,
             identity.viewport_height,
@@ -586,13 +578,55 @@ class AvitoClient:
         )
         await self._log_browser_public_ip(proxy_url)
 
+    async def _start_browser_session(self) -> None:
+        if self._browser_context is not None:
+            return
+        assert self._browser is not None
+        proxy_url = self._avito_proxies.current
+        manager = BrowserIdentityManager(
+            self._browser,
+            proxy=_playwright_proxy(proxy_url) if proxy_url else None,
+            stealth=self._settings.avito_browser_stealth,
+        )
+        session = await manager.create_session(self._ensure_browser_identity())
+        self._browser_session = session
+        self._browser_context = session.context
+        session.context.on(
+            "close",
+            lambda *_args: self._mark_browser_context_closed(session.context),
+        )
+        self._browser_warmed_up = False
+
+    async def _close_browser_session(self) -> None:
+        context = self._browser_context
+        session = self._browser_session
+        self._browser_context = None
+        self._browser_session = None
+        self._browser_warmed_up = False
+        if context is not None:
+            close = getattr(context, "close", None)
+            if close is not None:
+                with suppress(PlaywrightError):
+                    await close()
+        if session is not None:
+            logger.info("Изолированная Chromium-сессия закрыта: session=%s", session.session_id)
+
+    def _mark_browser_closed(self, browser: Browser) -> None:
+        if self._browser is browser:
+            self._browser = None
+            self._browser_context = None
+            self._browser_session = None
+            self._browser_warmed_up = False
+
     def _mark_browser_context_closed(self, browser_context: BrowserContext) -> None:
         if self._browser_context is browser_context:
             self._browser_context = None
             self._browser_warmed_up = False
 
     async def _reset_closed_browser(self) -> None:
+        self._browser = None
         self._browser_context = None
+        self._browser_session = None
         self._browser_warmed_up = False
         if self._curl_session is not None:
             await self._curl_session.close()
@@ -747,6 +781,7 @@ class AvitoClient:
             browser_restarts = 0
             while True:
                 await self._start_browser()
+                await self._start_browser_session()
                 try:
                     return await self._search_browser_with_current_proxy(
                         url,
@@ -784,6 +819,8 @@ class AvitoClient:
                         "Окно Chromium было закрыто; автоматически запускаю его заново"
                     )
                     await self._reset_closed_browser()
+                finally:
+                    await self._close_browser_session()
 
     async def _acquire_browser_page(self) -> Page:
         """Keep one working tab alive and reuse it between scheduled checks."""
@@ -859,6 +896,7 @@ class AvitoClient:
                         timeout=min(8_000, self._settings.request_timeout_seconds * 1000),
                     )
                 html = await page.content()
+                await self._save_browser_snapshot(page)
                 try:
                     page_state = extract_page_state(html)
                     items = parse_search_html(html)
@@ -906,6 +944,33 @@ class AvitoClient:
             f"Avito недоступен через Chromium: {last_error}",
             diagnostic_path=last_diagnostic_path,
         )
+
+    async def _save_browser_snapshot(self, page: Page) -> Path | None:
+        if not self._settings.avito_browser_snapshots or self._browser_session is None:
+            return None
+        session_id = self._browser_session.session_id
+        target = (
+            self._settings.database_path.parent
+            / "diagnostics"
+            / "browser-sessions"
+            / f"{session_id}.json"
+        )
+        try:
+            snapshot = await collect_browser_snapshot(page)
+            snapshot.update(
+                {
+                    "sessionId": session_id,
+                    "identityId": self._browser_session.identity.identity_id,
+                    "url": page.url,
+                    "capturedAt": datetime.now().astimezone().isoformat(),
+                }
+            )
+            save_browser_snapshot(snapshot, target)
+            logger.info("Browser snapshot сохранён: session=%s path=%s", session_id, target)
+            return target
+        except (OSError, TypeError, PlaywrightError) as exc:
+            logger.warning("Не удалось сохранить browser snapshot: %s", exc)
+            return None
 
     def _proxy_rotation_available(self) -> bool:
         return (
@@ -957,6 +1022,10 @@ class AvitoClient:
         if self._browser_context is not None:
             await self._browser_context.close()
             self._browser_context = None
+            self._browser_session = None
+        if self._browser is not None:
+            await self._browser.close()
+            self._browser = None
         if self._playwright is not None:
             await self._playwright.stop()
             self._playwright = None
@@ -1431,8 +1500,9 @@ class AvitoClient:
         )
 
     async def open_manual_verification_page(self, url: str) -> tuple[Page, int | None, int | None]:
-        """Open Avito in the persistent profile for a user-completed verification."""
+        """Open Avito in a temporary session for user-completed verification."""
         await self._start_browser()
+        await self._start_browser_session()
         assert self._browser_context is not None
         page = await self._acquire_browser_page()
         home_status, _, _ = await self._open_avito_home(page)
