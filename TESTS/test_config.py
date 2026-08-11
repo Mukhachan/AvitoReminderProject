@@ -11,6 +11,7 @@ def test_settings_split_telegram_and_avito_proxies(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_PROXY", "socks5://127.0.0.1:20808")
     monkeypatch.setenv("TELEGRAM_PROXY_RDNS", "true")
     monkeypatch.setenv("AVITO_PROXY", "socks5://127.0.0.1:20808")
+    monkeypatch.setenv("AVITO_PROXY_POOL_FILE", "")
     monkeypatch.setenv("AVITO_PROXY_MODE", "fallback")
     monkeypatch.setenv("AVITO_PROXY_RDNS", "true")
     monkeypatch.setenv("AVITO_TRANSPORT", "browser")
@@ -62,6 +63,8 @@ def test_settings_split_telegram_and_avito_proxies(monkeypatch) -> None:
 def test_settings_reject_invalid_proxy(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
     monkeypatch.setenv("TELEGRAM_PROXY", "ftp://127.0.0.1:20808")
+    monkeypatch.setenv("AVITO_PROXY_POOL_FILE", "")
+    monkeypatch.setenv("AVITO_PROXY_MODE", "direct")
     with pytest.raises(ValueError, match="поддерживаются"):
         load_settings()
 
@@ -104,6 +107,8 @@ def test_telegram_transport_applies_rdns(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
     monkeypatch.setenv("TELEGRAM_PROXY", "socks5://127.0.0.1:20808")
     monkeypatch.setenv("TELEGRAM_PROXY_RDNS", "false")
+    monkeypatch.setenv("AVITO_PROXY_POOL_FILE", "")
+    monkeypatch.setenv("AVITO_PROXY_MODE", "direct")
     settings = load_settings()
     session = create_telegram_session(settings)
     assert session._connector_init["rdns"] is False

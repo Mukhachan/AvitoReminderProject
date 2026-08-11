@@ -915,7 +915,7 @@ def test_browser_starts_global_cooldown_after_repeated_reload_errors(
     assert delays == [90, 90, 90]
 
 
-def test_hard_ip_block_waits_then_requests_proxy_rotation(tmp_path, monkeypatch) -> None:
+def test_hard_ip_block_requests_proxy_rotation_without_waiting(tmp_path, monkeypatch) -> None:
     blocked_html = "<h2>Доступ ограничен: проблема с IP</h2>"
     page = ReloadingPageStub([(200, blocked_html)])
     page.url = "https://www.avito.ru/#block"
@@ -962,8 +962,8 @@ def test_hard_ip_block_waits_then_requests_proxy_rotation(tmp_path, monkeypatch)
 
     asyncio.run(scenario())
 
-    assert page.reload_count == 1
-    assert delays == [120]
+    assert page.reload_count == 0
+    assert delays == []
     assert len(notifications) == 1
     assert notifications[0].retry_after_seconds is None
 

@@ -65,8 +65,11 @@ AVITO_CAPTCHA_MARKERS = (
     'data-marker="captcha"',
     "captcha challenge",
 )
-AVITO_BLOCK_MARKERS = (
+AVITO_HARD_IP_BLOCK_MARKERS = (
     "доступ ограничен: проблема с ip",
+)
+AVITO_BLOCK_MARKERS = (
+    *AVITO_HARD_IP_BLOCK_MARKERS,
     "too many requests",
     *AVITO_CAPTCHA_MARKERS,
 )
@@ -94,6 +97,11 @@ def _is_blocked_html(html: str) -> bool:
 def _is_captcha_html(html: str) -> bool:
     lowered = html.lower()
     return any(marker in lowered for marker in AVITO_CAPTCHA_MARKERS)
+
+
+def _is_hard_ip_block_html(html: str) -> bool:
+    lowered = html.lower()
+    return any(marker in lowered for marker in AVITO_HARD_IP_BLOCK_MARKERS)
 
 
 def _is_blocked_page(status: int | None, html: str) -> bool:
@@ -1429,6 +1437,29 @@ class AvitoClient:
         if _is_avito_page_ready(status, html, page.url):
             logger.info("Avito: %s успешно загружена без ожидания", page_name)
             return status, html, False
+
+        if _is_hard_ip_block_html(html) and self._proxy_rotation_available():
+            diagnostic_path = await self._save_browser_diagnostic(page, status)
+            logger.warning(
+                "Avito сообщил о проблеме с IP (%s, HTTP %s); "
+                "переключаю пользователя и прокси без ожидания. Снимок: %s",
+                page_name,
+                status,
+                diagnostic_path or "не сохранён",
+            )
+            if on_blocked is not None:
+                blocked_error = AvitoBlockedError(
+                    f"Avito ограничил IP: {page_name}, HTTP {status}; меняю прокси",
+                    diagnostic_path=diagnostic_path,
+                )
+                try:
+                    await on_blocked(blocked_error)
+                except Exception:
+                    logger.exception("Не удалось отправить уведомление о блокировке Avito")
+            raise _AvitoProxyRotationRequired(
+                "Avito сообщил о проблеме с IP; требуется немедленная смена пользователя и IP",
+                diagnostic_path=diagnostic_path,
+            )
 
         diagnostic_path: Path | None = None
         block_notified = False
