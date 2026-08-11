@@ -796,21 +796,24 @@ def test_browser_waits_and_reloads_until_avito_access_returns(tmp_path, monkeypa
     assert block_notifications[0].diagnostic_path == tmp_path / "blocked.png"
 
 
-def test_captcha_page_reports_user_confirmation_before_reload(tmp_path, monkeypatch) -> None:
+def test_captcha_page_restarts_without_waiting(tmp_path, monkeypatch) -> None:
     captcha_html = "<button>Нажмите для подтверждения</button>"
-    ready_html = "<html><title>Avito</title><main>Главная</main></html>"
-    page = ReloadingPageStub([(200, ready_html)])
+    page = ReloadingPageStub([])
     client = AvitoClient(
         settings(
             tmp_path / "test.db",
-            avito_transport="browser",
+            avito_transport="hybrid",
+            avito_proxy_mode="proxy",
+            avito_proxy_pool=("http://user:password@proxy.example.test:1000",),
+            avito_proxy_rotation_enabled=True,
             avito_page_reload_delay_seconds=90,
         )
     )
     notifications: list[AvitoBlockedError] = []
+    delays: list[float] = []
 
-    async def fake_sleep(_delay: float) -> None:
-        return None
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
 
     async def fake_diagnostic(*_args, **_kwargs):
         return tmp_path / "captcha.png"
@@ -821,20 +824,67 @@ def test_captcha_page_reports_user_confirmation_before_reload(tmp_path, monkeypa
     monkeypatch.setattr("avito_reminder.avito.asyncio.sleep", fake_sleep)
     monkeypatch.setattr(client, "_save_browser_diagnostic", fake_diagnostic)
 
-    result = asyncio.run(
-        client._wait_then_reload_avito_page(
-            page,  # type: ignore[arg-type]
-            status=200,
-            html=captcha_html,
-            page_name="главная страница",
-            on_blocked=on_blocked,
-        )
-    )
+    async def scenario() -> None:
+        with pytest.raises(_AvitoProxyRotationRequired):
+            await client._wait_then_reload_avito_page(
+                page,  # type: ignore[arg-type]
+                status=200,
+                html=captcha_html,
+                page_name="главная страница",
+                on_blocked=on_blocked,
+            )
 
-    assert result == (200, ready_html, True)
-    assert page.reload_count == 1
+    asyncio.run(scenario())
+
+    assert page.reload_count == 0
+    assert delays == []
     assert len(notifications) == 1
     assert isinstance(notifications[0], AvitoCaptchaRequiredError)
+
+
+def test_transient_ip_problem_waits_once_before_proxy_rotation(
+    tmp_path, monkeypatch
+) -> None:
+    blocked_html = "<h2>Доступ ограничен: проблема с IP</h2>"
+    page = ReloadingPageStub([(200, blocked_html)])
+    page.url = "https://www.avito.ru/#block"
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="hybrid",
+            avito_proxy_mode="proxy",
+            avito_proxy_pool=("http://user:password@proxy.example.test:1000",),
+            avito_proxy_rotation_enabled=True,
+            avito_proxy_rotate_after_reloads=1,
+            avito_page_reload_delay_seconds=90,
+            avito_page_reload_jitter_seconds=30,
+        )
+    )
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    async def fake_diagnostic(*_args, **_kwargs):
+        return tmp_path / "blocked.png"
+
+    monkeypatch.setattr("avito_reminder.avito.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("avito_reminder.avito.random.uniform", lambda _low, high: high)
+    monkeypatch.setattr(client, "_save_browser_diagnostic", fake_diagnostic)
+
+    async def scenario() -> None:
+        with pytest.raises(_AvitoProxyRotationRequired):
+            await client._wait_then_reload_avito_page(
+                page,  # type: ignore[arg-type]
+                status=200,
+                html=blocked_html,
+                page_name="главная страница",
+            )
+
+    asyncio.run(scenario())
+
+    assert page.reload_count == 1
+    assert delays == [120]
 
 
 def test_browser_continues_without_wait_or_reload_when_page_opened_normally(
@@ -916,8 +966,8 @@ def test_browser_starts_global_cooldown_after_repeated_reload_errors(
 
 
 def test_hard_ip_block_requests_proxy_rotation_without_waiting(tmp_path, monkeypatch) -> None:
-    blocked_html = "<h2>Доступ ограничен: проблема с IP</h2>"
-    page = ReloadingPageStub([(200, blocked_html)])
+    blocked_html = "<h2>Блокировка IP</h2>"
+    page = ReloadingPageStub([])
     page.url = "https://www.avito.ru/#block"
     client = AvitoClient(
         settings(

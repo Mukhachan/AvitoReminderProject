@@ -65,13 +65,17 @@ AVITO_CAPTCHA_MARKERS = (
     'data-marker="captcha"',
     "captcha challenge",
 )
-AVITO_HARD_IP_BLOCK_MARKERS = (
+AVITO_TRANSIENT_IP_PROBLEM_MARKERS = (
     "доступ ограничен: проблема с ip",
 )
-AVITO_BLOCK_MARKERS = (
-    *AVITO_HARD_IP_BLOCK_MARKERS,
-    "too many requests",
+AVITO_IMMEDIATE_RESTART_MARKERS = (
+    "блокировка ip",
     *AVITO_CAPTCHA_MARKERS,
+)
+AVITO_BLOCK_MARKERS = (
+    *AVITO_TRANSIENT_IP_PROBLEM_MARKERS,
+    *AVITO_IMMEDIATE_RESTART_MARKERS,
+    "too many requests",
 )
 AVITO_SITE_DATA_CLEAR_SCRIPT = """
 async () => {
@@ -99,9 +103,14 @@ def _is_captcha_html(html: str) -> bool:
     return any(marker in lowered for marker in AVITO_CAPTCHA_MARKERS)
 
 
-def _is_hard_ip_block_html(html: str) -> bool:
+def _is_transient_ip_problem_html(html: str) -> bool:
     lowered = html.lower()
-    return any(marker in lowered for marker in AVITO_HARD_IP_BLOCK_MARKERS)
+    return any(marker in lowered for marker in AVITO_TRANSIENT_IP_PROBLEM_MARKERS)
+
+
+def _requires_immediate_restart_html(html: str) -> bool:
+    lowered = html.lower()
+    return any(marker in lowered for marker in AVITO_IMMEDIATE_RESTART_MARKERS)
 
 
 def _is_blocked_page(status: int | None, html: str) -> bool:
@@ -1438,27 +1447,51 @@ class AvitoClient:
             logger.info("Avito: %s успешно загружена без ожидания", page_name)
             return status, html, False
 
-        if _is_hard_ip_block_html(html) and self._proxy_rotation_available():
+        should_restart_immediately = _requires_immediate_restart_html(html) or (
+            _is_blocked_page(status, html) and not _is_transient_ip_problem_html(html)
+        )
+        if should_restart_immediately:
             diagnostic_path = await self._save_browser_diagnostic(page, status)
+            is_captcha = _is_captcha_html(html)
             logger.warning(
-                "Avito сообщил о проблеме с IP (%s, HTTP %s); "
+                (
+                    "Avito показал капчу (%s, HTTP %s); "
+                    if is_captcha
+                    else "Avito заблокировал IP (%s, HTTP %s); "
+                )
+                +
                 "переключаю пользователя и прокси без ожидания. Снимок: %s",
                 page_name,
                 status,
                 diagnostic_path or "не сохранён",
             )
             if on_blocked is not None:
-                blocked_error = AvitoBlockedError(
-                    f"Avito ограничил IP: {page_name}, HTTP {status}; меняю прокси",
+                error_type = AvitoCaptchaRequiredError if is_captcha else AvitoBlockedError
+                blocked_error = error_type(
+                    (
+                        f"Avito показал капчу: {page_name}, HTTP {status}; меняю пользователя"
+                        if is_captcha
+                        else f"Avito заблокировал IP: {page_name}, HTTP {status}; меняю прокси"
+                    ),
                     diagnostic_path=diagnostic_path,
                 )
                 try:
                     await on_blocked(blocked_error)
                 except Exception:
                     logger.exception("Не удалось отправить уведомление о блокировке Avito")
-            raise _AvitoProxyRotationRequired(
-                "Avito сообщил о проблеме с IP; требуется немедленная смена пользователя и IP",
+            if self._proxy_rotation_available():
+                raise _AvitoProxyRotationRequired(
+                    "Avito потребовал немедленную смену пользователя и IP",
+                    diagnostic_path=diagnostic_path,
+                )
+            raise AvitoBlockedError(
+                "Avito заблокировал текущую сессию, но смена IP недоступна",
                 diagnostic_path=diagnostic_path,
+            )
+
+        if not _is_transient_ip_problem_html(html):
+            raise AvitoNetworkError(
+                f"Avito не открыл страницу {page_name}: HTTP {status}"
             )
 
         diagnostic_path: Path | None = None
