@@ -8,11 +8,13 @@ import random
 import re
 import shutil
 import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import suppress
-from datetime import datetime
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from ipaddress import ip_address
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse, urlsplit
 
 import aiohttp
@@ -58,7 +60,7 @@ logger = logging.getLogger(__name__)
 
 AVITO_BASE_URL = "https://www.avito.ru"
 PUBLIC_IP_CHECK_URL = "https://api.ipify.org?format=json"
-AVITO_BLOCK_HTTP_STATUSES = frozenset({401, 403, 429})
+AVITO_BLOCK_HTTP_STATUSES = frozenset({403, 429})
 AVITO_CAPTCHA_MARKERS = (
     "нажмите для подтверждения",
     "продолжить для решения капчи",
@@ -77,6 +79,64 @@ AVITO_BLOCK_MARKERS = (
     *AVITO_IMMEDIATE_RESTART_MARKERS,
     "too many requests",
 )
+AVITO_HOME_PAGE_NAME = "главная страница"
+AVITO_HOME_CATEGORY_MARKERS = (
+    "авто",
+    "недвижимость",
+    "услуги",
+    "электроника",
+    "работа",
+    "запчасти",
+)
+AVITO_HOME_READY_SCRIPT = """
+() => {
+  const isVisible = (element) => {
+    if (!element) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" &&
+      Number(style.opacity || "1") > 0 && rect.width > 0 && rect.height > 0;
+  };
+  const visible = (selector) =>
+    Array.from(document.querySelectorAll(selector)).some(isVisible);
+  const visibleText = (selector, expected) =>
+    Array.from(document.querySelectorAll(selector)).some((element) => {
+      if (!isVisible(element)) return false;
+      const text = (element.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
+      return expected.some((value) => text.includes(value));
+    });
+
+  const blockIsVisible = visible('[data-marker="captcha"]') || visibleText(
+    "h1, h2, h3, p, button",
+    [
+      "доступ ограничен: проблема с ip",
+      "блокировка ip",
+      "нажмите для подтверждения",
+      "продолжить для решения капчи",
+    ],
+  );
+  if (blockIsVisible) return false;
+
+  const searchIsVisible = visible(
+    '[data-marker="search-form/suggest/input"], ' +
+    'input[placeholder*="Поиск по объявлениям" i]',
+  );
+  const submitIsVisible = visible('[data-marker="search-form/submit-button"]') ||
+    visibleText("button", ["найти"]);
+  const categoryNames = [
+    "авто",
+    "недвижимость",
+    "услуги",
+    "электроника",
+    "работа",
+    "запчасти",
+  ];
+  const categoryCount = categoryNames.filter((name) =>
+    visibleText("a, button, h2, h3", [name]),
+  ).length;
+  return searchIsVisible && submitIsVisible && categoryCount >= 3;
+}
+"""
 AVITO_SITE_DATA_CLEAR_SCRIPT = """
 async () => {
   localStorage.clear();
@@ -131,6 +191,73 @@ def _is_avito_page_ready(status: int | None, html: str, url: str) -> bool:
     )
 
 
+def _looks_like_loaded_avito_home_html(html: str) -> bool:
+    """Recognize the populated home page even if stale block text remains in HTML."""
+    soup = BeautifulSoup(html, "html.parser")
+    search_input = soup.select_one('[data-marker="search-form/suggest/input"]')
+    if search_input is None:
+        search_input = next(
+            (
+                tag
+                for tag in soup.find_all("input")
+                if "поиск по объявлениям"
+                in str(tag.get("placeholder", "")).strip().lower()
+            ),
+            None,
+        )
+    submit_button = soup.select_one('[data-marker="search-form/submit-button"]')
+    page_text = " ".join(soup.stripped_strings).lower()
+    has_submit = submit_button is not None or re.search(r"\bнайти\b", page_text) is not None
+    category_count = sum(
+        marker in page_text for marker in AVITO_HOME_CATEGORY_MARKERS
+    )
+    return search_input is not None and has_submit and category_count >= 3
+
+
+async def _is_visually_loaded_avito_home(
+    page: Page,
+    html: str,
+    *,
+    wait_timeout_ms: int = 0,
+) -> bool:
+    """Prefer visible DOM state so hidden/stale block nodes cannot cause a false block."""
+    try:
+        if bool(await page.evaluate(AVITO_HOME_READY_SCRIPT)):
+            return True
+        if wait_timeout_ms > 0:
+            await page.wait_for_function(
+                AVITO_HOME_READY_SCRIPT,
+                timeout=wait_timeout_ms,
+            )
+            return True
+    except (AttributeError, PlaywrightError):
+        return _looks_like_loaded_avito_home_html(html)
+    return False
+
+
+def _retry_after_seconds(headers: Mapping[str, object] | None) -> int | None:
+    if not headers:
+        return None
+    raw = next(
+        (value for key, value in headers.items() if key.lower() == "retry-after"),
+        None,
+    )
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    try:
+        return max(1, int(value))
+    except ValueError:
+        pass
+    try:
+        target = parsedate_to_datetime(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=UTC)
+    return max(1, math.ceil((target - datetime.now(UTC)).total_seconds()))
+
+
 def _has_target_search_query(current_url: str, target_url: str) -> bool:
     current_query = parse_qs(urlsplit(current_url).query).get("q")
     target_query = parse_qs(urlsplit(target_url).query).get("q")
@@ -167,8 +294,16 @@ class AvitoNetworkError(AvitoError):
     """Avito could not be reached."""
 
 
+class AvitoSessionError(AvitoError):
+    """The current Avito session is not accepted; this is not an IP rotation signal."""
+
+
 class AvitoBlockedError(AvitoError):
     """Avito requested a captcha or blocked the current IP."""
+
+
+class AvitoRateLimitedError(AvitoBlockedError):
+    """Avito or the local request budget requires a pause without rotating IP."""
 
 
 class AvitoCaptchaRequiredError(AvitoBlockedError):
@@ -455,6 +590,103 @@ class _AvitoProxyPool:
         return self.current
 
 
+class _RouteHealthStore:
+    """Persist request budgets and quarantine state for each real egress route."""
+
+    def __init__(self, path: Path, *, window_seconds: int, max_requests: int) -> None:
+        self.path = path
+        self.window_seconds = window_seconds
+        self.max_requests = max_requests
+        self._state = self._load()
+
+    def _load(self) -> dict[str, dict[str, Any]]:
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            str(key): value
+            for key, value in payload.items()
+            if isinstance(value, dict)
+        }
+
+    def _save(self) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_suffix(f"{self.path.suffix}.tmp")
+            temporary.write_text(
+                json.dumps(self._state, ensure_ascii=False, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            temporary.replace(self.path)
+        except OSError as exc:
+            logger.warning("Не удалось сохранить состояние маршрутов Avito: %s", exc)
+
+    def _entry(self, key: str) -> dict[str, Any]:
+        return self._state.setdefault(key, {})
+
+    def quarantine_remaining(self, key: str, *, now: float | None = None) -> int:
+        current = time.time() if now is None else now
+        raw = self._entry(key).get("quarantined_until", 0)
+        try:
+            remaining = float(raw) - current
+        except (TypeError, ValueError):
+            return 0
+        return max(0, math.ceil(remaining))
+
+    def request_budget_remaining(self, key: str, *, now: float | None = None) -> int:
+        current = time.time() if now is None else now
+        entry = self._entry(key)
+        raw_requests = entry.get("requests", [])
+        requests = [
+            float(value)
+            for value in raw_requests
+            if isinstance(value, (int, float)) and current - float(value) < 3600
+        ]
+        entry["requests"] = requests
+        window = [stamp for stamp in requests if current - stamp < self.window_seconds]
+        if len(window) < self.max_requests:
+            return 0
+        return max(1, math.ceil(window[0] + self.window_seconds - current))
+
+    def record_request(self, key: str, *, now: float | None = None) -> None:
+        current = time.time() if now is None else now
+        entry = self._entry(key)
+        requests = entry.setdefault("requests", [])
+        if not isinstance(requests, list):
+            requests = []
+        requests = [
+            float(value)
+            for value in requests
+            if isinstance(value, (int, float)) and current - float(value) < 3600
+        ]
+        requests.append(current)
+        entry["requests"] = requests
+        self._save()
+
+    def quarantine(self, key: str, seconds: int, reason: str) -> None:
+        entry = self._entry(key)
+        entry["quarantined_until"] = max(
+            float(entry.get("quarantined_until", 0) or 0),
+            time.time() + seconds,
+        )
+        entry["last_failure_at"] = time.time()
+        entry["last_failure_reason"] = reason
+        failures = entry.setdefault("failures", {})
+        if not isinstance(failures, dict):
+            failures = {}
+        failures[reason] = int(failures.get(reason, 0) or 0) + 1
+        entry["failures"] = failures
+        self._save()
+
+    def record_success(self, key: str) -> None:
+        entry = self._entry(key)
+        entry["last_success_at"] = time.time()
+        self._save()
+
+
 def _proxy_label(proxy_url: str | None) -> str:
     if not proxy_url:
         return "direct"
@@ -499,9 +731,91 @@ class AvitoClient:
         self._proxy_prepared_for_browser_start = False
         self._browser_lock = asyncio.Lock()
         self._browser_warmed_up = False
-        self._last_browser_request_at: float | None = None
+        self._last_avito_request_at: float | None = None
         self._cooldown_until: float | None = None
+        self._route_public_ips: dict[str, str] = {}
+        health_path = settings.database_path.parent / "avito-route-health.json"
+        self._route_health = _RouteHealthStore(
+            health_path,
+            window_seconds=settings.avito_request_window_seconds,
+            max_requests=settings.avito_max_requests_per_window,
+        )
         self.last_route: str | None = None
+
+    def _route_health_key(
+        self,
+        proxy_url: str | None = None,
+        *,
+        use_current_route: bool = True,
+    ) -> str:
+        selected = self._avito_proxies.current if use_current_route else proxy_url
+        route = _proxy_label(selected)
+        public_ip = self._route_public_ips.get(route)
+        return f"ip:{public_ip}" if public_ip else f"route:{route}"
+
+    async def _before_avito_request(
+        self,
+        *,
+        explicit_delay_applied: bool = False,
+        route_key: str | None = None,
+    ) -> None:
+        key = route_key or self._route_health_key()
+        quarantine = self._route_health.quarantine_remaining(key)
+        if quarantine:
+            raise AvitoRateLimitedError(
+                f"Маршрут Avito находится в карантине ещё {quarantine} секунд",
+                retry_after_seconds=quarantine,
+            )
+
+        budget_wait = self._route_health.request_budget_remaining(key)
+        if budget_wait:
+            logger.warning(
+                "Локальный лимит запросов Avito для %s исчерпан; пауза %s с",
+                key,
+                budget_wait,
+            )
+            await asyncio.sleep(budget_wait)
+
+        loop = asyncio.get_running_loop()
+        if self._last_avito_request_at is not None and not explicit_delay_applied:
+            minimum = self._settings.avito_min_request_interval_seconds
+            jitter = random.uniform(0, self._settings.avito_request_jitter_seconds)
+            remaining = minimum + jitter - (loop.time() - self._last_avito_request_at)
+            if remaining > 0:
+                logger.info("Пауза %.1f с перед следующим запросом Avito", remaining)
+                await asyncio.sleep(remaining)
+        self._last_avito_request_at = loop.time()
+        self._route_health.record_request(key)
+
+    def _record_route_success(self, route_key: str | None = None) -> None:
+        self._route_health.record_success(route_key or self._route_health_key())
+
+    def _quarantine_current_route(
+        self,
+        *,
+        seconds: int,
+        reason: str,
+        route_key: str | None = None,
+    ) -> None:
+        self._route_health.quarantine(
+            route_key or self._route_health_key(), seconds, reason
+        )
+
+    def _rate_limit_error(
+        self,
+        headers: Mapping[str, object] | None = None,
+        *,
+        message: str = "Avito ограничил частоту запросов (HTTP 429)",
+        route_key: str | None = None,
+    ) -> AvitoRateLimitedError:
+        retry_after = _retry_after_seconds(headers)
+        retry_after = retry_after or self._settings.avito_rate_limit_cooldown_seconds
+        self._quarantine_current_route(
+            seconds=retry_after,
+            reason="http-429",
+            route_key=route_key,
+        )
+        return AvitoRateLimitedError(message, retry_after_seconds=retry_after)
 
     def _ensure_browser_identity(self) -> BrowserIdentity:
         if self._browser_identity is None:
@@ -732,6 +1046,7 @@ class AvitoClient:
             if not isinstance(raw_ip, str):
                 raise ValueError("ответ не содержит поле ip")
             public_ip = str(ip_address(raw_ip.strip()))
+            self._route_public_ips[route] = public_ip
             logger.info(
                 "Выходной IP Chromium для Avito: %s, route=%s",
                 public_ip,
@@ -798,6 +1113,7 @@ class AvitoClient:
         url: str,
         *,
         on_blocked: BlockedCallback | None = None,
+        initial: bool = False,
     ) -> list[AvitoItem]:
         if self._settings.avito_transport in {"browser", "hybrid"}:
             route_kind = "proxy" if self._avito_proxies.current else "direct"
@@ -806,7 +1122,7 @@ class AvitoClient:
                 if self._settings.avito_transport == "hybrid"
                 else f"chromium-{route_kind}"
             )
-            return await self._search_browser(url, on_blocked=on_blocked)
+            return await self._search_browser(url, on_blocked=on_blocked, initial=initial)
 
         headers = {
             "User-Agent": self._settings.user_agent,
@@ -826,6 +1142,8 @@ class AvitoClient:
             try:
                 return await self._search_route(url, headers, use_proxy=use_proxy)
             except AvitoError as exc:
+                if isinstance(exc, (AvitoRateLimitedError, AvitoSessionError)):
+                    raise
                 route_errors.append(f"{route_name}: {exc}")
                 was_blocked = was_blocked or isinstance(exc, AvitoBlockedError)
                 if index + 1 < len(routes):
@@ -847,10 +1165,10 @@ class AvitoClient:
         url: str,
         *,
         on_blocked: BlockedCallback | None = None,
+        initial: bool = False,
     ) -> list[AvitoItem]:
         async with self._browser_lock:
             self._raise_if_cooling_down()
-            await self._wait_for_browser_slot()
             await self._prepare_new_user_session()
             rotations = 0
             browser_restarts = 0
@@ -867,6 +1185,7 @@ class AvitoClient:
                     return await self._search_browser_with_current_proxy(
                         url,
                         on_blocked=on_blocked,
+                        initial=initial,
                     )
                 except _AvitoProxyRotationRequired as exc:
                     if (
@@ -901,7 +1220,8 @@ class AvitoClient:
                     )
                     await self._reset_closed_browser()
                 finally:
-                    await self._close_browser_session()
+                    if self._settings.avito_new_user_per_session:
+                        await self._close_browser_session()
 
     async def _acquire_browser_page(self) -> Page:
         """Keep one working tab alive and reuse it between scheduled checks."""
@@ -929,6 +1249,7 @@ class AvitoClient:
         url: str,
         *,
         on_blocked: BlockedCallback | None = None,
+        initial: bool = False,
     ) -> list[AvitoItem]:
         assert self._browser_context is not None
         last_error: Exception | None = None
@@ -964,7 +1285,13 @@ class AvitoClient:
                         on_blocked=on_blocked,
                     )
                 if status in AVITO_BLOCK_HTTP_STATUSES:
+                    if status == 429:
+                        raise self._rate_limit_error(
+                            message="Chromium получил от Avito HTTP 429"
+                        )
                     raise AvitoBlockedError(f"Chromium получил от Avito HTTP {status}")
+                if status == 401:
+                    raise AvitoSessionError("Chromium получил от Avito HTTP 401")
                 if status is not None and status >= 500:
                     raise AvitoNetworkError(f"Chromium получил от Avito HTTP {status}")
                 if status is not None and status >= 400:
@@ -986,7 +1313,13 @@ class AvitoClient:
                             items,
                             page_state=page_state,
                             search_url=url,
+                            max_pages=(
+                                self._settings.avito_initial_api_max_pages
+                                if initial
+                                else self._settings.avito_api_max_pages
+                            ),
                         )
+                    self._record_route_success()
                     return items[: self._settings.max_results]
                 except (AvitoBlockedError, AvitoParseError) as exc:
                     exc.diagnostic_path = await self._save_browser_diagnostic(page, status)
@@ -1257,6 +1590,7 @@ class AvitoClient:
         last_error: Exception | None = None
         for attempt in range(1, self._settings.request_retries + 1):
             try:
+                await self._before_avito_request()
                 response = await session.get(
                     f"{AVITO_BASE_URL}/web/1/js/items",
                     params=params,
@@ -1268,9 +1602,20 @@ class AvitoClient:
                     allow_redirects=True,
                 )
                 await self._sync_curl_cookies_to_browser(session)
-                if response.status_code in AVITO_BLOCK_HTTP_STATUSES:
-                    raise AvitoBlockedError(
-                        f"JSON-пагинация Avito вернула HTTP {response.status_code}"
+                if response.status_code == 429:
+                    raise self._rate_limit_error(response.headers)
+                if response.status_code == 401:
+                    raise AvitoSessionError("JSON-пагинация Avito вернула HTTP 401")
+                if response.status_code == 403:
+                    if _is_blocked_html(response.text):
+                        self._quarantine_current_route(
+                            seconds=self._settings.avito_ip_quarantine_seconds,
+                            reason="http-403",
+                        )
+                        raise AvitoBlockedError("JSON-пагинация Avito вернула HTTP 403")
+                    raise AvitoSessionError(
+                        "JSON-пагинация Avito вернула HTTP 403 без признаков IP-блокировки",
+                        retry_after_seconds=900,
                     )
                 if response.status_code >= 500:
                     raise AvitoNetworkError(
@@ -1282,6 +1627,10 @@ class AvitoClient:
                         f"HTTP {response.status_code}"
                     )
                 if _is_blocked_html(response.text):
+                    self._quarantine_current_route(
+                        seconds=self._settings.avito_ip_quarantine_seconds,
+                        reason="blocked-page",
+                    )
                     raise AvitoBlockedError("JSON-пагинация Avito вернула страницу блокировки")
                 try:
                     payload = response.json()
@@ -1314,26 +1663,30 @@ class AvitoClient:
         *,
         page_state: AvitoPageState,
         search_url: str,
+        max_pages: int | None = None,
     ) -> list[AvitoItem]:
+        page_limit = max_pages or self._settings.avito_api_max_pages
         if (
             not first_page_items
             or len(first_page_items) >= self._settings.max_results
             or not page_state.context
             or not page_state.api_params
-            or self._settings.avito_api_max_pages <= 1
+            or page_limit <= 1
         ):
             return first_page_items
 
         session = await self._get_curl_session()
         await self._sync_browser_cookies_to_curl(session)
         result = {item.id: item for item in first_page_items}
-        for page_number in range(2, self._settings.avito_api_max_pages + 1):
+        for page_number in range(2, page_limit + 1):
             try:
                 page_items = await self._request_api_page(
                     page_number=page_number,
                     page_state=page_state,
                     search_url=search_url,
                 )
+            except (AvitoRateLimitedError, AvitoSessionError):
+                raise
             except AvitoBlockedError as exc:
                 if self._proxy_rotation_available():
                     raise _AvitoProxyRotationRequired(str(exc)) from exc
@@ -1361,15 +1714,8 @@ class AvitoClient:
         return list(result.values())
 
     async def _wait_for_browser_slot(self) -> None:
-        loop = asyncio.get_running_loop()
-        if self._last_browser_request_at is not None:
-            minimum = self._settings.avito_min_request_interval_seconds
-            jitter = random.uniform(0, self._settings.avito_request_jitter_seconds)
-            remaining = minimum + jitter - (loop.time() - self._last_browser_request_at)
-            if remaining > 0:
-                logger.info("Пауза %.1f с перед следующим запросом Avito", remaining)
-                await asyncio.sleep(remaining)
-        self._last_browser_request_at = loop.time()
+        """Backward-compatible entry point for the global Avito request limiter."""
+        await self._before_avito_request()
 
     def _raise_if_cooling_down(self) -> None:
         if self._cooldown_until is None:
@@ -1411,6 +1757,7 @@ class AvitoClient:
                     wait_until="domcontentloaded",
                     timeout=min(5_000, self._settings.request_timeout_seconds * 1000),
                 )
+        await self._before_avito_request()
         response = await page.goto(
             url,
             wait_until="commit",
@@ -1425,12 +1772,14 @@ class AvitoClient:
             )
         html = await page.content()
         logger.info("Avito: %s открыта, HTTP %s", page_name, status)
+        response_headers = response.headers if response is not None else None
         return await self._wait_then_reload_avito_page(
             page,
             status=status,
             html=html,
             page_name=page_name,
             on_blocked=on_blocked,
+            headers=response_headers,
         )
 
     async def _wait_then_reload_avito_page(
@@ -1441,16 +1790,47 @@ class AvitoClient:
         html: str,
         page_name: str,
         on_blocked: BlockedCallback | None = None,
+        headers: Mapping[str, object] | None = None,
     ) -> tuple[int | None, str, bool]:
         """Return immediately on success; wait and reload only after an Avito error."""
-        if _is_avito_page_ready(status, html, page.url):
+        recovered_home = (
+            page_name == AVITO_HOME_PAGE_NAME
+            and status is not None
+            and status < 400
+            and _is_avito_url(page.url)
+            and await _is_visually_loaded_avito_home(page, html)
+        )
+        if _is_avito_page_ready(status, html, page.url) or recovered_home:
+            if recovered_home and _is_blocked_html(html):
+                logger.info(
+                    "Avito: главная страница уже отображается; "
+                    "остаточные признаки блокировки в HTML и URL игнорируются"
+                )
             logger.info("Avito: %s успешно загружена без ожидания", page_name)
             return status, html, False
+
+        if status == 401:
+            raise AvitoSessionError("Avito отклонил текущую сессию (HTTP 401)")
+
+        if status == 429 and not _is_transient_ip_problem_html(html):
+            raise self._rate_limit_error(headers)
+
+        if status == 403 and not _is_blocked_html(html):
+            diagnostic_path = await self._save_browser_diagnostic(page, status)
+            raise AvitoSessionError(
+                "Avito вернул HTTP 403 без известных признаков IP-блокировки",
+                diagnostic_path=diagnostic_path,
+                retry_after_seconds=900,
+            )
 
         should_restart_immediately = _requires_immediate_restart_html(html) or (
             _is_blocked_page(status, html) and not _is_transient_ip_problem_html(html)
         )
         if should_restart_immediately:
+            self._quarantine_current_route(
+                seconds=self._settings.avito_ip_quarantine_seconds,
+                reason="captcha" if _is_captcha_html(html) else "ip-block",
+            )
             diagnostic_path = await self._save_browser_diagnostic(page, status)
             is_captcha = _is_captcha_html(html)
             logger.warning(
@@ -1560,6 +1940,7 @@ class AvitoClient:
                     diagnostic_path=diagnostic_path,
                 )
             try:
+                await self._before_avito_request(explicit_delay_applied=True)
                 response = await page.reload(
                     wait_until="domcontentloaded",
                     timeout=self._settings.request_timeout_seconds * 1000,
@@ -1570,7 +1951,28 @@ class AvitoClient:
                 logger.warning("Не удалось обновить Avito: %s", exc)
                 status = None
 
-            if _is_avito_page_ready(status, html, page.url):
+            recovered_home = (
+                page_name == AVITO_HOME_PAGE_NAME
+                and status is not None
+                and status < 400
+                and _is_avito_url(page.url)
+                and await _is_visually_loaded_avito_home(
+                    page,
+                    html,
+                    wait_timeout_ms=min(
+                        5_000,
+                        self._settings.request_timeout_seconds * 1000,
+                    ),
+                )
+            )
+            if recovered_home:
+                html = await page.content()
+            if _is_avito_page_ready(status, html, page.url) or recovered_home:
+                if recovered_home and _is_blocked_html(html):
+                    logger.info(
+                        "Avito: после ожидания отображается готовая главная страница; "
+                        "остаточные признаки блокировки игнорируются"
+                    )
                 logger.info(
                     "Avito: %s готова после ожидания и %s обновлений, HTTP %s",
                     page_name,
@@ -1587,6 +1989,10 @@ class AvitoClient:
                 reload_limit,
             )
             if reload_number >= reload_limit:
+                self._quarantine_current_route(
+                    seconds=self._settings.avito_ip_quarantine_seconds,
+                    reason="transient-ip-problem",
+                )
                 if diagnostic_path is None:
                     diagnostic_path = await self._save_browser_diagnostic(page, status)
                 if self._proxy_rotation_available() and block_notified:
@@ -1622,7 +2028,7 @@ class AvitoClient:
         return await self._navigate_avito_page(
             page,
             f"{AVITO_BASE_URL}/",
-            page_name="главная страница",
+            page_name=AVITO_HOME_PAGE_NAME,
             on_blocked=on_blocked,
         )
 
@@ -1670,9 +2076,14 @@ class AvitoClient:
         use_proxy: bool,
     ) -> list[AvitoItem]:
         session, request_proxy = await self._get_session(use_proxy=use_proxy)
+        route_key = self._route_health_key(
+            self._avito_proxies.current if use_proxy else None,
+            use_current_route=False,
+        )
         last_error: Exception | None = None
         for attempt in range(1, self._settings.request_retries + 1):
             try:
+                await self._before_avito_request(route_key=route_key)
                 async with session.get(
                     url,
                     headers=headers,
@@ -1680,13 +2091,32 @@ class AvitoClient:
                     allow_redirects=True,
                 ) as response:
                     body = await response.text(errors="replace")
-                    if response.status in {401, 403, 429}:
-                        raise AvitoBlockedError(f"Avito вернул HTTP {response.status}")
+                    if response.status == 429:
+                        raise self._rate_limit_error(
+                            response.headers,
+                            route_key=route_key,
+                        )
+                    if response.status == 401:
+                        raise AvitoSessionError("Avito вернул HTTP 401")
+                    if response.status == 403:
+                        if _is_blocked_html(body):
+                            self._quarantine_current_route(
+                                seconds=self._settings.avito_ip_quarantine_seconds,
+                                reason="http-403",
+                                route_key=route_key,
+                            )
+                            raise AvitoBlockedError("Avito вернул HTTP 403")
+                        raise AvitoSessionError(
+                            "Avito вернул HTTP 403 без признаков IP-блокировки",
+                            retry_after_seconds=900,
+                        )
                     if response.status >= 500:
                         raise AvitoNetworkError(f"Avito вернул HTTP {response.status}")
                     if response.status != 200:
                         raise AvitoNetworkError(f"Неожиданный HTTP-статус Avito: {response.status}")
-                    return parse_search_html(body)[: self._settings.max_results]
+                    items = parse_search_html(body)[: self._settings.max_results]
+                    self._record_route_success(route_key)
+                    return items
             except AvitoBlockedError:
                 raise
             except (TimeoutError, aiohttp.ClientError, AvitoNetworkError) as exc:

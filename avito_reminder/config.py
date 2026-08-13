@@ -93,6 +93,8 @@ class Settings:
     database_path: Path
     scheduler_poll_seconds: int
     search_interval_seconds: int
+    search_result_cache_seconds: int
+    search_schedule_spread_seconds: int
     request_timeout_seconds: int
     request_retries: int
     max_results: int
@@ -114,6 +116,7 @@ class Settings:
     avito_transport: str
     avito_http_impersonate: str
     avito_api_max_pages: int
+    avito_initial_api_max_pages: int
     avito_browser_headless: bool
     avito_browser_profile_path: Path
     avito_chromium_executable: str | None
@@ -127,6 +130,10 @@ class Settings:
     avito_browser_timezone: str
     avito_min_request_interval_seconds: int
     avito_request_jitter_seconds: int
+    avito_request_window_seconds: int
+    avito_max_requests_per_window: int
+    avito_rate_limit_cooldown_seconds: int
+    avito_ip_quarantine_seconds: int
     avito_page_reload_delay_seconds: int
     avito_page_reload_jitter_seconds: int
     avito_error_reload_attempts: int
@@ -163,7 +170,13 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
         bot_token=token,
         database_path=database_path,
         scheduler_poll_seconds=_as_int("SCHEDULER_POLL_SECONDS", 15),
-        search_interval_seconds=_as_int("SEARCH_INTERVAL_SECONDS", 900, minimum=60),
+        search_interval_seconds=_as_int("SEARCH_INTERVAL_SECONDS", 1800, minimum=60),
+        search_result_cache_seconds=_as_int(
+            "SEARCH_RESULT_CACHE_SECONDS", 600, minimum=0
+        ),
+        search_schedule_spread_seconds=_as_int(
+            "SEARCH_SCHEDULE_SPREAD_SECONDS", 300, minimum=0
+        ),
         request_timeout_seconds=_as_int("REQUEST_TIMEOUT_SECONDS", 25, minimum=5),
         request_retries=_as_int("REQUEST_RETRIES", 3),
         max_results=_as_int("MAX_RESULTS", 30),
@@ -188,7 +201,7 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
             "AVITO_PROXY_ROTATION_DELAY_SECONDS", 15,
             minimum=0,
         ),
-        avito_proxy_max_rotations=_as_int("AVITO_PROXY_MAX_ROTATIONS", 5),
+        avito_proxy_max_rotations=_as_int("AVITO_PROXY_MAX_ROTATIONS", 1),
         avito_log_public_ip=_as_bool(os.getenv("AVITO_LOG_PUBLIC_IP"), True),
         avito_transport=_choice(
             "AVITO_TRANSPORT",
@@ -197,7 +210,8 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
         ),
         avito_http_impersonate=os.getenv("AVITO_HTTP_IMPERSONATE", "chrome").strip()
         or "chrome",
-        avito_api_max_pages=_as_int("AVITO_API_MAX_PAGES", 3),
+        avito_api_max_pages=_as_int("AVITO_API_MAX_PAGES", 1),
+        avito_initial_api_max_pages=_as_int("AVITO_INITIAL_API_MAX_PAGES", 3),
         avito_browser_headless=_as_bool(os.getenv("AVITO_BROWSER_HEADLESS"), True),
         avito_browser_profile_path=Path(
             os.getenv("AVITO_BROWSER_PROFILE_PATH", "data/chromium-profile")
@@ -211,13 +225,13 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
             os.getenv("AVITO_IDENTITY_ROTATE_ON_BLOCK"), True
         ),
         avito_new_user_per_session=_as_bool(
-            os.getenv("AVITO_NEW_USER_PER_SESSION"), True
+            os.getenv("AVITO_NEW_USER_PER_SESSION"), False
         ),
         avito_identity_rotate_on_browser_start=_as_bool(
-            os.getenv("AVITO_IDENTITY_ROTATE_ON_BROWSER_START"), True
+            os.getenv("AVITO_IDENTITY_ROTATE_ON_BROWSER_START"), False
         ),
         avito_proxy_rotate_on_browser_start=_as_bool(
-            os.getenv("AVITO_PROXY_ROTATE_ON_BROWSER_START"), True
+            os.getenv("AVITO_PROXY_ROTATE_ON_BROWSER_START"), False
         ),
         avito_browser_locale=os.getenv("AVITO_BROWSER_LOCALE", "ru-RU").strip()
         or "ru-RU",
@@ -225,14 +239,20 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
             "AVITO_BROWSER_TIMEZONE", "Europe/Moscow"
         ).strip()
         or "Europe/Moscow",
-        avito_min_request_interval_seconds=_as_int("AVITO_MIN_REQUEST_INTERVAL_SECONDS", 60),
-        avito_request_jitter_seconds=_as_int("AVITO_REQUEST_JITTER_SECONDS", 30, minimum=0),
+        avito_min_request_interval_seconds=_as_int("AVITO_MIN_REQUEST_INTERVAL_SECONDS", 120),
+        avito_request_jitter_seconds=_as_int("AVITO_REQUEST_JITTER_SECONDS", 120, minimum=0),
+        avito_request_window_seconds=_as_int("AVITO_REQUEST_WINDOW_SECONDS", 900),
+        avito_max_requests_per_window=_as_int("AVITO_MAX_REQUESTS_PER_WINDOW", 8),
+        avito_rate_limit_cooldown_seconds=_as_int(
+            "AVITO_RATE_LIMIT_COOLDOWN_SECONDS", 3600
+        ),
+        avito_ip_quarantine_seconds=_as_int("AVITO_IP_QUARANTINE_SECONDS", 21_600),
         avito_page_reload_delay_seconds=_as_int("AVITO_PAGE_RELOAD_DELAY_SECONDS", 90),
         avito_page_reload_jitter_seconds=_as_int(
             "AVITO_PAGE_RELOAD_JITTER_SECONDS", 30, minimum=0
         ),
         avito_error_reload_attempts=_as_int("AVITO_ERROR_RELOAD_ATTEMPTS", 3),
-        avito_cooldown_seconds=_as_int("AVITO_COOLDOWN_SECONDS", 10_800),
+        avito_cooldown_seconds=_as_int("AVITO_COOLDOWN_SECONDS", 21_600),
         user_agent=os.getenv(
             "AVITO_USER_AGENT",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

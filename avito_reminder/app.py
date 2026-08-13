@@ -23,7 +23,10 @@ async def run() -> None:
         level=getattr(logging, settings.log_level, logging.INFO),
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
-    database = Database(settings.database_path)
+    database = Database(
+        settings.database_path,
+        schedule_spread_seconds=settings.search_schedule_spread_seconds,
+    )
     await database.initialize()
 
     bot = Bot(

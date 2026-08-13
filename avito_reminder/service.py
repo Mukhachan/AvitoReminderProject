@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 
@@ -30,6 +31,12 @@ class CheckResult:
     error: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _CachedSearchResult:
+    expires_at: float
+    items: tuple[AvitoItem, ...]
+
+
 def format_price(price: int | None) -> str:
     return "Цена не указана" if price is None else f"{price:,} ₽".replace(",", " ")
 
@@ -55,6 +62,35 @@ class MonitorService:
         self._locks: dict[int, asyncio.Lock] = {}
         self._semaphore = asyncio.Semaphore(3)
         self._cooldown_notified_until: dict[int, float] = {}
+        self._search_cache: dict[str, _CachedSearchResult] = {}
+        self._url_locks: dict[str, asyncio.Lock] = {}
+
+    async def _search_items(self, search: Search, *, on_blocked) -> list[AvitoItem]:
+        lock = self._url_locks.setdefault(search.url, asyncio.Lock())
+        async with lock:
+            now = time.monotonic()
+            cached = self._search_cache.get(search.url)
+            if cached is not None and cached.expires_at > now:
+                logger.info(
+                    "Поиск #%s использует общий кэш URL: осталось %.1f с",
+                    search.id,
+                    cached.expires_at - now,
+                )
+                return list(cached.items)
+            if cached is not None:
+                self._search_cache.pop(search.url, None)
+
+            items = await self.client.search(
+                search.url,
+                on_blocked=on_blocked,
+                initial=not search.initialized,
+            )
+            if self.settings.search_result_cache_seconds:
+                self._search_cache[search.url] = _CachedSearchResult(
+                    expires_at=time.monotonic() + self.settings.search_result_cache_seconds,
+                    items=tuple(items),
+                )
+            return items
 
     async def run(self) -> None:
         logger.info("Мониторинг Avito запущен")
@@ -86,7 +122,7 @@ class MonitorService:
                 async def notify_blocked(exc: AvitoBlockedError) -> None:
                     await self._notify_avito_waiting(search, exc)
 
-                items = await self.client.search(search.url, on_blocked=notify_blocked)
+                items = await self._search_items(search, on_blocked=notify_blocked)
                 should_notify = search.initialized or self.settings.notify_initial_results
                 new_count = await self.database.record_items(search.id, items, notify=should_notify)
                 sent = await self._send_pending(search)
@@ -131,17 +167,18 @@ class MonitorService:
         wait_max = wait_min + self.settings.avito_page_reload_jitter_seconds
         wait_text = str(wait_min) if wait_min == wait_max else f"{wait_min}–{wait_max}"
         if isinstance(_exc, AvitoCaptchaRequiredError):
-            browser_hint = (
-                "Откройте окно Chromium на Raspberry Pi"
-                if not self.settings.avito_browser_headless
-                else "Остановите сервис командой <code>bash service.sh stop</code>, "
-                "затем запустите видимый Chromium: "
-                "<code>.venv/bin/python -m avito_reminder.cli --setup-browser</code>"
+            action = (
+                "Бот сменит пользователя и IP один раз; при повторной проверке "
+                "запросы будут поставлены на паузу."
+                if rotation_enabled
+                else (
+                    "Автоматическая смена IP недоступна, поэтому запросы будут "
+                    "поставлены на паузу."
+                )
             )
             text = (
-                f"🧩 <b>Поиск #{search.id}: Avito просит пройти проверку.</b>\n"
-                f"{browser_hint} и нажмите «Нажмите для подтверждения». "
-                f"Парсер подождёт {wait_text} секунд и обновит страницу."
+                f"🧩 <b>Поиск #{search.id}: Avito запросил проверку.</b>\n"
+                f"Текущая сессия завершена без ожидания. {action}"
             )
         else:
             text = (

@@ -61,46 +61,49 @@ TELEGRAM_PROXY=socks5://127.0.0.1:20808
 TELEGRAM_PROXY_RDNS=true
 AVITO_TRANSPORT=hybrid
 AVITO_HTTP_IMPERSONATE=chrome
-AVITO_API_MAX_PAGES=3
+AVITO_API_MAX_PAGES=1
+AVITO_INITIAL_API_MAX_PAGES=3
 AVITO_BROWSER_HEADLESS=true
 AVITO_BROWSER_PROFILE_PATH=data/chromium-profile
 AVITO_BROWSER_STEALTH=true
 AVITO_BROWSER_SNAPSHOTS=true
 AVITO_IDENTITY_ROTATE_ON_BLOCK=true
-AVITO_NEW_USER_PER_SESSION=true
-AVITO_IDENTITY_ROTATE_ON_BROWSER_START=true
+AVITO_NEW_USER_PER_SESSION=false
+AVITO_IDENTITY_ROTATE_ON_BROWSER_START=false
 AVITO_BROWSER_LOCALE=ru-RU
 AVITO_BROWSER_TIMEZONE=Europe/Moscow
 AVITO_PAGE_RELOAD_DELAY_SECONDS=90
 AVITO_PAGE_RELOAD_JITTER_SECONDS=30
 AVITO_ERROR_RELOAD_ATTEMPTS=3
-AVITO_COOLDOWN_SECONDS=10800
+AVITO_MIN_REQUEST_INTERVAL_SECONDS=120
+AVITO_REQUEST_JITTER_SECONDS=120
+AVITO_REQUEST_WINDOW_SECONDS=900
+AVITO_MAX_REQUESTS_PER_WINDOW=8
+AVITO_RATE_LIMIT_COOLDOWN_SECONDS=3600
+AVITO_IP_QUARANTINE_SECONDS=21600
+AVITO_COOLDOWN_SECONDS=21600
 AVITO_PROXY_MODE=fallback
 AVITO_PROXY=
 AVITO_PROXY_POOL_FILE=data/avito_proxies.txt
 AVITO_PROXY_ROTATION_ENABLED=true
 AVITO_PROXY_ROTATE_AFTER_RELOADS=1
 AVITO_PROXY_ROTATION_DELAY_SECONDS=15
-AVITO_PROXY_MAX_ROTATIONS=5
-AVITO_PROXY_ROTATE_ON_BROWSER_START=true
+AVITO_PROXY_MAX_ROTATIONS=1
+AVITO_PROXY_ROTATE_ON_BROWSER_START=false
 AVITO_LOG_PUBLIC_IP=true
 AVITO_PROXY_RDNS=true
 ```
 
-Telegram всегда работает через Naive/SOCKS5. Avito открывается установленным Chromium через
-обычное подключение Raspberry Pi, а внешний прокси подключается только после подтверждённой
-блокировки. Browser identity эфемерна: сохранённый
-`data/chromium-profile/avito-browser-identity.json` не загружается.
-Каждая логическая проверка получает новый `BrowserContext` без cookies, local/session storage,
-IndexedDB, Cache Storage и Service Workers предыдущей проверки. Перед выдачей браузер открывает
-`https://www.avito.ru/`, а затем переходит на поисковую ссылку в той же временной сессии с referer
-главной страницы. По окончании проверки контекст закрывается и его состояние отбрасывается.
-При `AVITO_NEW_USER_PER_SESSION=true` перед второй и каждой следующей проверкой дополнительно
-закрываются процесс Chromium и HTTP-сессия. Новый запуск получает новую identity, а при доступной
-ротации — следующий sticky-прокси. В режиме `direct` процесс и identity меняются, но внешний IP
-остаётся прежним.
-Между последовательными поисками выдерживается глобальная пауза 60–90 секунд, поэтому несколько
-подписок не создают пачку одновременных обращений к Avito.
+Telegram всегда работает через Naive/SOCKS5. Avito работает через выбранный sticky-прокси.
+По умолчанию успешный `BrowserContext`, cookies, fingerprint и IP сохраняются между проверками;
+они полностью заменяются только после подтверждённой блокировки или смены маршрута. Перед первой
+выдачей браузер открывает `https://www.avito.ru/`, затем поисковую ссылку в той же сессии.
+Все обращения — навигация, reload и JSON-пагинация — проходят через единый лимитер с паузой
+120–240 секунд. Дополнительно действует бюджет запросов на 15-минутное окно. Его состояние и
+карантин реальных выходных IP сохраняются в `data/avito-route-health.json`.
+Одинаковые поисковые URL в течение десяти минут используют один общий результат, а новые и
+возобновлённые задания получают стабильное смещение до пяти минут, чтобы не стартовать пачкой.
+Интервалы задаются через `SEARCH_RESULT_CACHE_SECONDS` и `SEARCH_SCHEDULE_SPREAD_SECONDS`.
 
 После успешной загрузки первой страницы бот использует алгоритм, адаптированный из
 `Duff89/parser_avito`:
@@ -109,19 +112,18 @@ IndexedDB, Cache Storage и Service Workers предыдущей проверк�
    `script[type="mime/invalid"][data-mfe-state="true"]`;
 2. перед JSON-запросами переносит актуальные cookies из Chromium в `curl_cffi`, а полученные
    `Set-Cookie` возвращает в текущую изолированную сессию;
-3. при необходимости получает страницы 2–3 через `/web/1/js/items`;
+3. при первом наполнении получает до трёх страниц, а при обычном мониторинге — только первую;
 4. использует один согласованный набор User-Agent, client hints, viewport, locale и Chrome
    TLS/HTTP-отпечатка в пределах одного запуска Chromium;
 5. при изменении внутреннего JSON Avito возвращается к разбору HTML-карточек первой страницы.
 
-`AVITO_API_MAX_PAGES` ограничивает нагрузку внутренней пагинации. `AVITO_HTTP_IMPERSONATE`
+`AVITO_API_MAX_PAGES` ограничивает обычный мониторинг, а `AVITO_INITIAL_API_MAX_PAGES` — только
+первое наполнение нового поиска. `AVITO_HTTP_IMPERSONATE`
 лучше оставлять равным `chrome`: случайная смена Chrome/Safari/Firefox при тех же cookies
 создавала бы противоречивый отпечаток. Для общего значения `chrome` парсер автоматически
 выбирает точную поддерживаемую `curl_cffi` версию, соответствующую `AVITO_USER_AGENT`.
-При `AVITO_IDENTITY_ROTATE_ON_BROWSER_START=true` каждый фактический запуск Chromium создаёт
-новую эфемерную identity и выбирает новый согласованный viewport. Это относится и к первому
-запуску процесса, и к автоматическому восстановлению после закрытия окна. Старый
-`avito-browser-identity.json`, если он остался от предыдущей версии, игнорируется.
+При `AVITO_IDENTITY_ROTATE_ON_BLOCK=true` новая согласованная identity создаётся после
+подтверждённой блокировки. Обычный перезапуск не должен менять её без необходимости.
 `AVITO_BROWSER_STEALTH=true` скрывает стандартные признаки Playwright и согласует JS-параметры
 с identity текущего запуска. Автоматическое решение капчи не используется.
 
@@ -159,19 +161,16 @@ AVITO_PROXY_POOL_FILE=data/avito_proxies.txt
 AVITO_PROXY_ROTATION_ENABLED=true
 AVITO_PROXY_ROTATE_AFTER_RELOADS=1
 AVITO_PROXY_ROTATION_DELAY_SECONDS=15
-AVITO_PROXY_MAX_ROTATIONS=5
-AVITO_PROXY_ROTATE_ON_BROWSER_START=true
+AVITO_PROXY_MAX_ROTATIONS=1
+AVITO_PROXY_ROTATE_ON_BROWSER_START=false
 ```
 
 `fallback` сначала использует обычный IP Raspberry Pi. Если Avito показал блокировку, парсер
 один раз ждёт случайные 90–120 секунд и обновляет страницу. При повторной блокировке он очищает
 заблокированные cookies, local/session storage, Cache Storage и IndexedDB, создаёт новую
 согласованную identity, закрывает Chromium и HTTP-сессию, выбирает следующий прокси, ждёт
-15 секунд и заново открывает Avito. После пяти неудачных смен IP включается общая пауза на три часа.
-Режим `proxy` при каждом запуске процесса начинает со случайного прокси. При
-`AVITO_PROXY_ROTATE_ON_BROWSER_START=true` следующий фактический запуск Chromium получает
-следующий endpoint пула (и вызывает `AVITO_PROXY_CHANGE_URL`, если он задан). Уже подготовленный
-после блокировки endpoint второй раз не переключается. В режиме `direct` пул полностью отключён.
+15 секунд и заново открывает Avito. Допускается одна смена IP; повторная блокировка включает
+общую паузу и карантин маршрута на шесть часов. В режиме `direct` пул полностью отключён.
 
 На странице `https://www.avito.ru/#block` с заголовком «Доступ ограничен: проблема с IP» парсер
 ждёт 90–120 секунд и один раз обновляет ту же вкладку. Если проблема исчезла, проверка продолжится
@@ -180,10 +179,9 @@ AVITO_PROXY_ROTATE_ON_BROWSER_START=true
 ожидаются и не обновляются: для них новый пользователь и прокси создаются сразу.
 
 Если на странице появилась кнопка «Нажмите для подтверждения» или другой признак капчи, бот
-отправляет отдельное сообщение с инструкцией открыть Chromium и пройти проверку. В видимом режиме
-на подтверждение остаётся текущее окно браузера; в headless-режиме сообщение содержит команду
-остановки сервиса и запуска `--setup-browser`. После ожидания 90–120 секунд парсер автоматически
-обновляет страницу.
+завершает текущую сессию без ожидания, один раз меняет пользователя и IP, а при повторении
+ставит обращения на длительную паузу. Ручной режим `--setup-browser` по-прежнему доступен для
+диагностики, но рабочий мониторинг не пытается автоматически проходить проверку.
 
 Чтобы парсер с самого запуска не использовал обычный IP и сразу открыл Avito через пул, замените
 только одну строку в `.env`:
@@ -194,7 +192,7 @@ AVITO_PROXY_MODE=proxy
 
 В этом режиме наличие `AVITO_PROXY` или непустого `AVITO_PROXY_POOL_FILE` проверяется при старте.
 При каждом новом запуске бота первый Chromium получает случайный адрес из списка; при блокировке
-парсер последовательно переключается на следующие адреса по тому же алгоритму. Вернуть
+парсер один раз переключается на следующий адрес. Вернуть
 первоначальную схему можно значением `AVITO_PROXY_MODE=fallback`.
 
 Chromium создаёт одну вкладку в новом изолированном контексте для каждой проверки. Если
@@ -308,13 +306,12 @@ bash service.sh start
 роутер при динамическом IP) либо дождитесь снятия ограничения.
 
 Успешно загруженная страница читается сразу: Chromium не ждёт 90–120 секунд и не обновляет её.
-Если Avito вернул ошибку, блокировку или капчу, вкладка остаётся открытой, парсер ждёт
-90–120 секунд и делает повторное обновление. Цикл повторяется только пока сохраняется ошибка. Первый
+Только страница «Доступ ограничен: проблема с IP» остаётся открытой на 90–120 секунд и один раз
+обновляется. Капча и «Блокировка IP» сразу завершают сессию и запускают единственную смену IP. Первый
 снимок сохраняется только локально в `data/diagnostics`; в Telegram скриншоты не отправляются. После восстановления
-главной страницы парсер сразу переходит к текущему поиску. После трёх неудачных перезагрузок
-подряд без настроенной ротации все обращения к Avito приостанавливаются на 10800 секунд (3 часа).
-С настроенным пулом блокировка сначала запускает последовательную смену IP; общая пауза включается
-после исчерпания `AVITO_PROXY_MAX_ROTATIONS`. После паузы мониторинг возобновляется автоматически.
+главной страницы парсер сразу переходит к текущему поиску. `429` учитывает заголовок `Retry-After`
+и не вызывает немедленную ротацию. После единственной неудачной смены IP все обращения ставятся
+на паузу, а маршрут сохраняется в карантине. После паузы мониторинг возобновляется автоматически.
 Бот не обходит капчу автоматически;
 в видимом режиме её можно завершить вручную. Для прежнего HTTP-клиента
 можно вручную задать `AVITO_TRANSPORT=http`; `AVITO_TRANSPORT=browser` отключает только

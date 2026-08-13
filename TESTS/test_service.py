@@ -21,7 +21,13 @@ class FakeBot:
 
 
 class FakeClient:
-    async def search(self, _: str, **_kwargs: object) -> list[AvitoItem]:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.initial_values: list[bool] = []
+
+    async def search(self, _: str, **kwargs: object) -> list[AvitoItem]:
+        self.calls += 1
+        self.initial_values.append(bool(kwargs.get("initial")))
         return [
             AvitoItem(
                 id="1234567890",
@@ -186,8 +192,89 @@ def test_monitor_tells_user_to_complete_visible_captcha(tmp_path) -> None:
 
         assert len(bot.messages) == 1
         message = bot.messages[0][1]
-        assert "Avito просит пройти проверку" in message
-        assert "Нажмите для подтверждения" in message
-        assert "90–120 секунд" in message
+        assert "Avito запросил проверку" in message
+        assert "без ожидания" in message
+        assert "смена IP недоступна" in message
+
+    asyncio.run(scenario())
+
+
+def test_monitor_reuses_cached_result_for_same_url(tmp_path) -> None:
+    async def scenario() -> None:
+        cfg = settings(tmp_path / "service.db", search_result_cache_seconds=600)
+        database = Database(cfg.database_path)
+        await database.initialize()
+        first_search = await database.add_search(
+            chat_id=10,
+            user_id=20,
+            query="телефон",
+            city="Москва",
+            price_min=None,
+            price_max=None,
+            url="https://www.avito.ru/moskva?q=телефон",
+        )
+        second_search = await database.add_search(
+            chat_id=11,
+            user_id=21,
+            query="телефон",
+            city="Москва",
+            price_min=None,
+            price_max=None,
+            url=first_search.url,
+        )
+        bot = FakeBot()
+        client = FakeClient()
+        service = MonitorService(
+            bot=bot,  # type: ignore[arg-type]
+            database=database,
+            client=client,  # type: ignore[arg-type]
+            settings=cfg,
+        )
+
+        first, second = await asyncio.gather(
+            service.check_search(first_search),
+            service.check_search(second_search),
+        )
+
+        assert first.found == second.found == 1
+        assert client.calls == 1
+        assert client.initial_values == [True]
+
+    asyncio.run(scenario())
+
+
+def test_captcha_message_describes_single_rotation_when_pool_is_enabled(tmp_path) -> None:
+    async def scenario() -> None:
+        cfg = settings(
+            tmp_path / "service.db",
+            avito_proxy_mode="proxy",
+            avito_proxy_pool=("http://proxy.example.test:1000",),
+            avito_proxy_rotation_enabled=True,
+        )
+        database = Database(cfg.database_path)
+        await database.initialize()
+        search = await database.add_search(
+            chat_id=10,
+            user_id=20,
+            query="книги",
+            city="Москва",
+            price_min=None,
+            price_max=None,
+            url="https://www.avito.ru/moskva?q=книги",
+        )
+        bot = FakeBot()
+        service = MonitorService(
+            bot=bot,  # type: ignore[arg-type]
+            database=database,
+            client=FakeClient(),  # type: ignore[arg-type]
+            settings=cfg,
+        )
+
+        await service._notify_avito_waiting(
+            search,
+            AvitoCaptchaRequiredError("Нажмите для подтверждения"),
+        )
+
+        assert "сменит пользователя и IP один раз" in bot.messages[0][1]
 
     asyncio.run(scenario())

@@ -16,9 +16,13 @@ from avito_reminder.avito import (
     AvitoError,
     AvitoNetworkError,
     AvitoParseError,
+    AvitoRateLimitedError,
+    AvitoSessionError,
     _AvitoProxyPool,
     _AvitoProxyRotationRequired,
+    _looks_like_loaded_avito_home_html,
     _playwright_proxy,
+    _retry_after_seconds,
     build_search_url,
     city_slug,
     parse_search_html,
@@ -94,6 +98,23 @@ class ReloadingPageStub:
 
     def is_closed(self) -> bool:
         return False
+
+
+class DelayedHomePageStub(ReloadingPageStub):
+    def __init__(self, blocked_html: str, ready_html: str):
+        super().__init__([(200, blocked_html)])
+        self.ready_html = ready_html
+        self.home_ready = False
+        self.wait_for_home_count = 0
+        self.url = "https://www.avito.ru/#block"
+
+    async def evaluate(self, _script: str) -> bool:
+        return self.home_ready
+
+    async def wait_for_function(self, _script: str, **_kwargs) -> None:
+        self.wait_for_home_count += 1
+        self.home_ready = True
+        self.html = self.ready_html
 
 
 class BlankTimeoutPageStub:
@@ -722,6 +743,73 @@ def test_browser_transport_uses_direct_chromium_route(tmp_path) -> None:
     assert client.last_route == "chromium-direct"
 
 
+def test_retry_after_supports_seconds_and_invalid_values() -> None:
+    assert _retry_after_seconds({"Retry-After": "120"}) == 120
+    assert _retry_after_seconds({"retry-after": "invalid"}) is None
+
+
+def test_rate_limit_uses_retry_after_and_quarantines_route(tmp_path) -> None:
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_rate_limit_cooldown_seconds=3600,
+        )
+    )
+
+    error = client._rate_limit_error({"Retry-After": "75"})
+
+    assert isinstance(error, AvitoRateLimitedError)
+    assert error.retry_after_seconds == 75
+    assert client._route_health.quarantine_remaining(client._route_health_key()) > 0
+
+
+def test_plain_403_is_session_error_not_ip_block(tmp_path, monkeypatch) -> None:
+    page = ReloadingPageStub([])
+    client = AvitoClient(settings(tmp_path / "test.db"))
+
+    async def fake_diagnostic(*_args, **_kwargs):
+        return tmp_path / "plain-403.png"
+
+    monkeypatch.setattr(client, "_save_browser_diagnostic", fake_diagnostic)
+
+    with pytest.raises(AvitoSessionError) as caught:
+        asyncio.run(
+            client._wait_then_reload_avito_page(
+                page,  # type: ignore[arg-type]
+                status=403,
+                html="<html><h1>Forbidden</h1></html>",
+                page_name="страница поиска",
+            )
+        )
+
+    assert caught.value.retry_after_seconds == 900
+    assert client._route_health.quarantine_remaining(client._route_health_key()) == 0
+
+
+def test_route_health_budget_waits_after_configured_request_count(
+    tmp_path, monkeypatch
+) -> None:
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_min_request_interval_seconds=1,
+            avito_request_window_seconds=900,
+            avito_max_requests_per_window=1,
+        )
+    )
+    client._route_health.record_request(client._route_health_key())
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("avito_reminder.avito.asyncio.sleep", fake_sleep)
+
+    asyncio.run(client._before_avito_request())
+
+    assert delays and delays[0] > 0
+
+
 def test_closed_browser_is_restarted_automatically(tmp_path) -> None:
     client = RestartingBrowserClient(
         settings(
@@ -885,6 +973,121 @@ def test_transient_ip_problem_waits_once_before_proxy_rotation(
 
     assert page.reload_count == 1
     assert delays == [120]
+
+
+def test_loaded_home_is_recognized_despite_stale_block_marker() -> None:
+    html = """
+        <html><body>
+          <div hidden>Доступ ограничен: проблема с IP</div>
+          <a data-marker="header/logo">Avito</a>
+          <input data-marker="search-form/suggest/input"
+                 placeholder="Поиск по объявлениям">
+          <button data-marker="search-form/submit-button">Найти</button>
+          <a>Авто</a><a>Недвижимость</a><a>Услуги</a>
+          <a>Электроника</a><a>Работа</a>
+        </body></html>
+    """
+
+    assert _looks_like_loaded_avito_home_html(html) is True
+
+
+def test_loaded_home_with_block_fragment_does_not_wait_or_rotate(
+    tmp_path, monkeypatch
+) -> None:
+    html = """
+        <html><body>
+          <div hidden>Доступ ограничен: проблема с IP</div>
+          <input placeholder="Поиск по объявлениям">
+          <button>Найти</button>
+          <a>Авто</a><a>Недвижимость</a><a>Услуги</a><a>Электроника</a>
+        </body></html>
+    """
+    page = ReloadingPageStub([])
+    page.url = "https://www.avito.ru/#block"
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="hybrid",
+            avito_proxy_mode="proxy",
+            avito_proxy_pool=("http://user:password@proxy.example.test:1000",),
+            avito_proxy_rotation_enabled=True,
+            avito_page_reload_delay_seconds=90,
+        )
+    )
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("avito_reminder.avito.asyncio.sleep", fake_sleep)
+
+    result = asyncio.run(
+        client._wait_then_reload_avito_page(
+            page,  # type: ignore[arg-type]
+            status=200,
+            html=html,
+            page_name="главная страница",
+        )
+    )
+
+    assert result == (200, html, False)
+    assert page.reload_count == 0
+    assert delays == []
+
+
+def test_parser_waits_for_home_to_finish_rendering_after_ip_problem(
+    tmp_path, monkeypatch
+) -> None:
+    blocked_html = "<h2>Доступ ограничен: проблема с IP</h2>"
+    ready_html = """
+        <input placeholder="Поиск по объявлениям">
+        <button>Найти</button>
+        <a>Авто</a><a>Недвижимость</a><a>Услуги</a><a>Работа</a>
+    """
+    page = DelayedHomePageStub(blocked_html, ready_html)
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+            avito_page_reload_delay_seconds=90,
+            avito_error_reload_attempts=1,
+        )
+    )
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    async def fake_diagnostic(*_args, **_kwargs):
+        return tmp_path / "blocked.png"
+
+    monkeypatch.setattr("avito_reminder.avito.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(client, "_save_browser_diagnostic", fake_diagnostic)
+
+    result = asyncio.run(
+        client._wait_then_reload_avito_page(
+            page,  # type: ignore[arg-type]
+            status=200,
+            html=blocked_html,
+            page_name="главная страница",
+        )
+    )
+
+    assert result == (200, ready_html, True)
+    assert page.reload_count == 1
+    assert page.wait_for_home_count == 1
+    assert delays == [90]
+
+
+def test_block_page_is_not_mistaken_for_loaded_home() -> None:
+    html = """
+        <html><body>
+          <a data-marker="header/logo">Avito</a>
+          <h2>Доступ ограничен: проблема с IP</h2>
+        </body></html>
+    """
+
+    assert _looks_like_loaded_avito_home_html(html) is False
 
 
 def test_browser_continues_without_wait_or_reload_when_page_opened_normally(

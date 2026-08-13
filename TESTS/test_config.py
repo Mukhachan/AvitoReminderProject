@@ -17,6 +17,7 @@ def test_settings_split_telegram_and_avito_proxies(monkeypatch) -> None:
     monkeypatch.setenv("AVITO_TRANSPORT", "browser")
     monkeypatch.setenv("AVITO_HTTP_IMPERSONATE", "chrome")
     monkeypatch.setenv("AVITO_API_MAX_PAGES", "4")
+    monkeypatch.setenv("AVITO_INITIAL_API_MAX_PAGES", "5")
     monkeypatch.setenv("AVITO_BROWSER_HEADLESS", "true")
     monkeypatch.setenv("AVITO_BROWSER_PROFILE_PATH", "data/test-browser-profile")
     monkeypatch.setenv("AVITO_BROWSER_STEALTH", "true")
@@ -28,6 +29,12 @@ def test_settings_split_telegram_and_avito_proxies(monkeypatch) -> None:
     monkeypatch.setenv("AVITO_BROWSER_TIMEZONE", "Europe/Moscow")
     monkeypatch.setenv("AVITO_MIN_REQUEST_INTERVAL_SECONDS", "25")
     monkeypatch.setenv("AVITO_REQUEST_JITTER_SECONDS", "5")
+    monkeypatch.setenv("AVITO_REQUEST_WINDOW_SECONDS", "901")
+    monkeypatch.setenv("AVITO_MAX_REQUESTS_PER_WINDOW", "9")
+    monkeypatch.setenv("AVITO_RATE_LIMIT_COOLDOWN_SECONDS", "3601")
+    monkeypatch.setenv("AVITO_IP_QUARANTINE_SECONDS", "7201")
+    monkeypatch.setenv("SEARCH_RESULT_CACHE_SECONDS", "601")
+    monkeypatch.setenv("SEARCH_SCHEDULE_SPREAD_SECONDS", "301")
     monkeypatch.setenv("AVITO_PAGE_RELOAD_DELAY_SECONDS", "91")
     monkeypatch.setenv("AVITO_PAGE_RELOAD_JITTER_SECONDS", "29")
     monkeypatch.setenv("AVITO_ERROR_RELOAD_ATTEMPTS", "4")
@@ -43,6 +50,7 @@ def test_settings_split_telegram_and_avito_proxies(monkeypatch) -> None:
     assert settings.avito_transport == "browser"
     assert settings.avito_http_impersonate == "chrome"
     assert settings.avito_api_max_pages == 4
+    assert settings.avito_initial_api_max_pages == 5
     assert settings.avito_browser_headless is True
     assert settings.avito_browser_profile_path.as_posix() == "data/test-browser-profile"
     assert settings.avito_browser_stealth is True
@@ -54,6 +62,12 @@ def test_settings_split_telegram_and_avito_proxies(monkeypatch) -> None:
     assert settings.avito_browser_timezone == "Europe/Moscow"
     assert settings.avito_min_request_interval_seconds == 25
     assert settings.avito_request_jitter_seconds == 5
+    assert settings.avito_request_window_seconds == 901
+    assert settings.avito_max_requests_per_window == 9
+    assert settings.avito_rate_limit_cooldown_seconds == 3601
+    assert settings.avito_ip_quarantine_seconds == 7201
+    assert settings.search_result_cache_seconds == 601
+    assert settings.search_schedule_spread_seconds == 301
     assert settings.avito_page_reload_delay_seconds == 91
     assert settings.avito_page_reload_jitter_seconds == 29
     assert settings.avito_error_reload_attempts == 4

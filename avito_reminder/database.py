@@ -18,8 +18,14 @@ def as_iso(value: datetime) -> str:
 
 
 class Database:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, schedule_spread_seconds: int = 0):
         self.path = path
+        self.schedule_spread_seconds = max(0, schedule_spread_seconds)
+
+    def _spread_delay(self, search_id: int) -> int:
+        if self.schedule_spread_seconds <= 0:
+            return 0
+        return (search_id * 97) % (self.schedule_spread_seconds + 1)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
@@ -171,6 +177,15 @@ class Database:
             row = connection.execute(
                 "SELECT * FROM searches WHERE id = ?", (cursor.lastrowid,)
             ).fetchone()
+            if row is not None and self.schedule_spread_seconds:
+                next_check = utc_now() + timedelta(seconds=self._spread_delay(row["id"]))
+                connection.execute(
+                    "UPDATE searches SET next_check_at = ? WHERE id = ?",
+                    (as_iso(next_check), row["id"]),
+                )
+                row = connection.execute(
+                    "SELECT * FROM searches WHERE id = ?", (row["id"],)
+                ).fetchone()
         search = self._search(row)
         assert search is not None
         return search
@@ -217,10 +232,13 @@ class Database:
         return await asyncio.to_thread(self._set_active, search_id, chat_id, active)
 
     def _set_active(self, search_id: int, chat_id: int, active: bool) -> bool:
+        next_check = utc_now()
+        if active:
+            next_check += timedelta(seconds=self._spread_delay(search_id))
         with self._connect() as connection:
             cursor = connection.execute(
                 "UPDATE searches SET active = ?, next_check_at = ? WHERE id = ? AND chat_id = ?",
-                (int(active), as_iso(utc_now()), search_id, chat_id),
+                (int(active), as_iso(next_check), search_id, chat_id),
             )
             return cursor.rowcount > 0
 
@@ -228,20 +246,23 @@ class Database:
         return await asyncio.to_thread(self._postpone_active_searches, delay_seconds)
 
     def _postpone_active_searches(self, delay_seconds: int) -> int:
-        resume_at = as_iso(utc_now() + timedelta(seconds=delay_seconds))
+        resume_at = utc_now() + timedelta(seconds=delay_seconds)
         with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE searches
-                SET next_check_at = CASE
-                    WHEN next_check_at < ? THEN ?
-                    ELSE next_check_at
-                END
-                WHERE active = 1
-                """,
-                (resume_at, resume_at),
-            )
-            return cursor.rowcount
+            rows = connection.execute(
+                "SELECT id, next_check_at FROM searches WHERE active = 1"
+            ).fetchall()
+            updated = 0
+            for row in rows:
+                target = resume_at + timedelta(seconds=self._spread_delay(row["id"]))
+                current = datetime.fromisoformat(row["next_check_at"])
+                if current >= target:
+                    continue
+                cursor = connection.execute(
+                    "UPDATE searches SET next_check_at = ? WHERE id = ?",
+                    (as_iso(target), row["id"]),
+                )
+                updated += cursor.rowcount
+            return updated
 
     async def delete_search(self, search_id: int, chat_id: int) -> bool:
         return await asyncio.to_thread(self._delete_search, search_id, chat_id)
@@ -327,6 +348,7 @@ class Database:
 
     def _mark_success(self, search_id: int, interval_seconds: int) -> None:
         now = utc_now()
+        next_check = now + timedelta(seconds=interval_seconds)
         with self._connect() as connection:
             connection.execute(
                 """
@@ -335,7 +357,7 @@ class Database:
                     last_error = NULL, failure_count = 0
                 WHERE id = ?
                 """,
-                (as_iso(now), as_iso(now + timedelta(seconds=interval_seconds)), search_id),
+                (as_iso(now), as_iso(next_check), search_id),
             )
 
     async def mark_failure(self, search_id: int, message: str, retry_seconds: int) -> None:

@@ -89,3 +89,41 @@ def test_database_migrates_existing_searches_with_default_interval(tmp_path) -> 
         assert search.interval_seconds == 900
 
     asyncio.run(scenario())
+
+
+def test_database_spreads_new_searches_deterministically(tmp_path) -> None:
+    async def scenario() -> None:
+        database = Database(tmp_path / "spread.db", schedule_spread_seconds=300)
+        await database.initialize()
+        first = await database.add_search(
+            chat_id=100,
+            user_id=200,
+            query="велосипед",
+            city="Москва",
+            price_min=None,
+            price_max=None,
+            url="https://www.avito.ru/moskva?q=велосипед",
+        )
+        second = await database.add_search(
+            chat_id=101,
+            user_id=201,
+            query="самокат",
+            city="Москва",
+            price_min=None,
+            price_max=None,
+            url="https://www.avito.ru/moskva?q=самокат",
+        )
+
+        assert first.next_check_at != second.next_check_at
+        first_delay = datetime.fromisoformat(first.next_check_at) - datetime.fromisoformat(
+            first.created_at
+        )
+        second_delay = datetime.fromisoformat(second.next_check_at) - datetime.fromisoformat(
+            second.created_at
+        )
+        assert 0 <= first_delay.total_seconds() <= 300
+        assert 0 <= second_delay.total_seconds() <= 300
+
+    from datetime import datetime
+
+    asyncio.run(scenario())
