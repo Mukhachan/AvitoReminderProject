@@ -265,6 +265,17 @@ class Database:
             ).fetchall()
         return [search for row in rows if (search := self._search(row)) is not None]
 
+    async def deactivate_user_searches(self, user_id: int) -> int:
+        return await asyncio.to_thread(self._deactivate_user_searches, user_id)
+
+    def _deactivate_user_searches(self, user_id: int) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE searches SET active = 0 WHERE user_id = ? AND active = 1",
+                (user_id,),
+            )
+            return cursor.rowcount
+
     async def due_searches(self, limit: int = 50) -> list[Search]:
         return await asyncio.to_thread(self._due_searches, limit)
 

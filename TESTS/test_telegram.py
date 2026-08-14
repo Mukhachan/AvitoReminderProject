@@ -1,12 +1,15 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest
 
+from avito_reminder.database import Database
 from avito_reminder.models import Search
 from avito_reminder.service import CheckResult
 from avito_reminder.telegram import (
     _confirmation_text,
+    _create_search,
     _format_interval,
     _parse_interval,
     _parse_price,
@@ -123,6 +126,40 @@ def test_manual_check_does_not_expose_technical_error() -> None:
     assert "403" not in text
     assert "ошиб" not in text.lower()
     assert "напишет" in text
+
+
+def test_confirmed_search_is_owned_by_callback_user_not_bot_message_author(tmp_path) -> None:
+    class BotAuthoredMessage:
+        def __init__(self) -> None:
+            self.chat = SimpleNamespace(id=123)
+            self.from_user = SimpleNamespace(id=999_999)
+            self.answers: list[str] = []
+
+        async def answer(self, text: str, **_kwargs) -> None:
+            self.answers.append(text)
+
+    async def scenario() -> None:
+        database = Database(tmp_path / "callback-owner.db")
+        await database.initialize()
+        message = BotAuthoredMessage()
+
+        search = await _create_search(
+            message,  # type: ignore[arg-type]
+            database,
+            owner_user_id=123,
+            query="велосипед",
+            city="Москва",
+            price_min=10_000,
+            price_max=50_000,
+            interval_seconds=1800,
+        )
+
+        assert search is not None
+        assert (search.user_id, search.chat_id) == (123, 123)
+        assert await database.list_user_searches(123) == [search]
+        assert await database.list_user_searches(999_999) == []
+
+    asyncio.run(scenario())
 
 
 def test_safe_edit_ignores_unchanged_telegram_message() -> None:

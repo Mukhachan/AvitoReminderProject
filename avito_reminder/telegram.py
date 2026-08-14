@@ -355,6 +355,7 @@ async def _create_search(
     message: Message,
     database: Database,
     *,
+    owner_user_id: int,
     query: str,
     city: str,
     price_min: int | None,
@@ -363,8 +364,7 @@ async def _create_search(
     minimum_interval_seconds: int = 30 * 60,
 ) -> Search | None:
     interval_seconds = max(interval_seconds, minimum_interval_seconds)
-    user_id = _message_user_id(message)
-    existing = await database.list_user_searches(user_id)
+    existing = await database.list_user_searches(owner_user_id)
     if len(existing) >= 20:
         await message.answer(
             "Достигнут лимит: не более 20 поисков на чат.",
@@ -391,8 +391,8 @@ async def _create_search(
     search = await database.add_search(
         # Telegram private-chat IDs equal the user's ID. Store it explicitly as
         # the delivery destination so notifications can never go to a group.
-        chat_id=user_id,
-        user_id=user_id,
+        chat_id=owner_user_id,
+        user_id=owner_user_id,
         query=query,
         city=city,
         price_min=price_min,
@@ -581,6 +581,7 @@ async def add_search_callback(
     await _create_search(
         callback.message,
         database,
+        owner_user_id=callback.from_user.id,
         query=str(data["query"]),
         city=str(data["city"]),
         price_min=price_min,

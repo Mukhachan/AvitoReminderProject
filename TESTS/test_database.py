@@ -84,6 +84,10 @@ def test_users_have_isolated_search_lists_and_permissions(tmp_path) -> None:
         assert await database.delete_user_search(first.id, 200)
         assert await database.list_user_searches(200) == []
 
+        assert await database.deactivate_user_searches(201) == 1
+        deactivated = await database.get_user_search(second.id, 201)
+        assert deactivated is not None and not deactivated.active
+
     asyncio.run(scenario())
 
 

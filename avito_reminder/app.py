@@ -48,7 +48,16 @@ async def run() -> None:
         try:
             # Do not touch Avito while Telegram is unavailable. Otherwise a restarting
             # service can repeatedly hit Avito without ever becoming usable to the owner.
-            await bot.get_me()
+            bot_identity = await bot.get_me()
+            bot_user_id = getattr(bot_identity, "id", None)
+            if isinstance(bot_user_id, int):
+                invalid_searches = await database.deactivate_user_searches(bot_user_id)
+                if invalid_searches:
+                    logging.getLogger(__name__).warning(
+                        "Приостановлено ошибочно созданных поисков с ID бота вместо "
+                        "владельца: %s",
+                        invalid_searches,
+                    )
             await bot.set_my_commands(BOT_COMMANDS)
             worker = asyncio.create_task(service.run(), name="avito-monitor")
             await dispatcher.start_polling(
