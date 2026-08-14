@@ -49,48 +49,6 @@ def test_database_search_and_notification_lifecycle(tmp_path) -> None:
     asyncio.run(scenario())
 
 
-def test_users_have_isolated_search_lists_and_permissions(tmp_path) -> None:
-    async def scenario() -> None:
-        database = Database(tmp_path / "user-isolation.db")
-        await database.initialize()
-        first = await database.add_search(
-            chat_id=-100500,
-            user_id=200,
-            query="велосипед",
-            city="Москва",
-            price_min=None,
-            price_max=None,
-            url="https://www.avito.ru/moskva?q=велосипед",
-        )
-        second = await database.add_search(
-            chat_id=-100500,
-            user_id=201,
-            query="телефон",
-            city="Москва",
-            price_min=None,
-            price_max=None,
-            url="https://www.avito.ru/moskva?q=телефон",
-        )
-
-        assert await database.list_user_searches(200) == [first]
-        assert await database.list_user_searches(201) == [second]
-        assert await database.get_user_search(second.id, 200) is None
-        assert not await database.set_user_search_active(second.id, 200, False)
-        assert not await database.delete_user_search(first.id, 201)
-
-        assert await database.set_user_search_active(first.id, 200, False)
-        paused = await database.get_user_search(first.id, 200)
-        assert paused is not None and not paused.active
-        assert await database.delete_user_search(first.id, 200)
-        assert await database.list_user_searches(200) == []
-
-        assert await database.deactivate_user_searches(201) == 1
-        deactivated = await database.get_user_search(second.id, 201)
-        assert deactivated is not None and not deactivated.active
-
-    asyncio.run(scenario())
-
-
 def test_pending_item_is_enriched_with_image_before_telegram_delivery(tmp_path) -> None:
     async def scenario() -> None:
         database = Database(tmp_path / "pending-image.db")

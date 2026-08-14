@@ -17,8 +17,10 @@ from aiogram.types import (
 
 from .avito import (
     AvitoBlockedError,
+    AvitoCaptchaRequiredError,
     AvitoClient,
     AvitoError,
+    AvitoHardBlockedError,
     AvitoParseError,
 )
 from .config import Settings
@@ -70,21 +72,16 @@ class MonitorService:
         # One outbound Avito workflow at a time. Browser mode already serializes in
         # AvitoClient; applying the same rule here also protects HTTP mode and shared IPs.
         self._semaphore = asyncio.Semaphore(1)
+        self._cooldown_notified_until: dict[int, float] = {}
         self._search_cache: dict[str, _CachedSearchResult] = {}
         self._url_locks: dict[str, asyncio.Lock] = {}
 
-    async def _search_items(
-        self,
-        search: Search,
-        *,
-        on_blocked,
-        force_refresh: bool = False,
-    ) -> list[AvitoItem]:
+    async def _search_items(self, search: Search, *, on_blocked) -> list[AvitoItem]:
         lock = self._url_locks.setdefault(search.url, asyncio.Lock())
         async with lock:
             now = time.monotonic()
             cached = self._search_cache.get(search.url)
-            if not force_refresh and cached is not None and cached.expires_at > now:
+            if cached is not None and cached.expires_at > now:
                 logger.info(
                     "Поиск #%s использует общий кэш URL: осталось %.1f с",
                     search.id,
@@ -152,9 +149,7 @@ class MonitorService:
     def stop(self) -> None:
         self._stop.set()
 
-    async def check_search(
-        self, search: Search, *, force_refresh: bool = False
-    ) -> CheckResult:
+    async def check_search(self, search: Search) -> CheckResult:
         lock = self._locks.setdefault(search.id, asyncio.Lock())
         if lock.locked():
             return CheckResult(found=0, new=0, sent=0, error="Проверка уже выполняется")
@@ -165,7 +160,7 @@ class MonitorService:
             async with self._semaphore:
                 try:
                     retry_after = await self.database.avito_retry_after_seconds()
-                    if retry_after and not force_refresh:
+                    if retry_after:
                         await self.database.mark_failure(
                             search.id,
                             "Global Avito cooldown is still active",
@@ -177,17 +172,7 @@ class MonitorService:
                             0,
                             f"Avito cooldown is active for {retry_after} more seconds",
                         )
-                    if retry_after:
-                        logger.info(
-                            "Ручная проверка поиска #%s обходит паузу расписания; "
-                            "карантин маршрутов Avito остаётся активным",
-                            search.id,
-                        )
-                    items = await self._search_items(
-                        search,
-                        on_blocked=notify_blocked,
-                        force_refresh=force_refresh,
-                    )
+                    items = await self._search_items(search, on_blocked=notify_blocked)
                     should_notify = search.initialized or self.settings.notify_initial_results
                     new_count = await self.database.record_items(
                         search.id,
@@ -216,7 +201,7 @@ class MonitorService:
                 await self.database.clear_pending_delivery_retry(search.id)
                 logger.warning(
                     "Бот заблокирован в чате %s; поиск #%s приостановлен",
-                    search.user_id,
+                    search.chat_id,
                     search.id,
                 )
                 return CheckResult(
@@ -276,10 +261,89 @@ class MonitorService:
                 else:
                     await self.database.clear_pending_delivery_retry(search.id)
 
-    async def _notify_avito_waiting(self, search: Search, exc: AvitoBlockedError) -> None:
-        # Block recovery still runs inside AvitoClient, but end users should only
-        # receive actual listings. Technical state remains available to operators.
-        logger.info("Поиск #%s: Avito временно ограничил доступ: %s", search.id, exc)
+    async def _notify_avito_waiting(self, search: Search, _exc: AvitoBlockedError) -> None:
+        distinct_proxy_routes = len(set(self.settings.avito_proxy_pool))
+        configured_rotation = (
+            self.settings.avito_proxy_mode != "direct"
+            and self.settings.avito_proxy_rotation_enabled
+            and bool(
+                self.settings.avito_proxy_change_url
+                or distinct_proxy_routes > 1
+                or (
+                    self.settings.avito_proxy_mode == "fallback"
+                    and bool(self.settings.avito_proxy_pool)
+                )
+            )
+        )
+        runtime_capability = getattr(self.client, "proxy_rotation_available", None)
+        rotation_hint = getattr(_exc, "rotation_planned", None)
+        if isinstance(rotation_hint, bool):
+            rotation_enabled = rotation_hint
+        else:
+            rotation_enabled = (
+                runtime_capability()
+                if callable(runtime_capability)
+                else configured_rotation
+            )
+        next_action = (
+            "Если блокировка останется, парсер автоматически сменит IP."
+            if rotation_enabled
+            else "Chromium останется открытым для повторной загрузки."
+        )
+        wait_min = self.settings.avito_page_reload_delay_seconds
+        wait_max = wait_min + self.settings.avito_page_reload_jitter_seconds
+        wait_text = str(wait_min) if wait_min == wait_max else f"{wait_min}–{wait_max}"
+        if isinstance(_exc, AvitoCaptchaRequiredError):
+            action = (
+                "Бот сменит пользователя и IP один раз; при повторной проверке "
+                "запросы будут поставлены на паузу."
+                if rotation_enabled
+                else (
+                    "Автоматическая смена IP недоступна, поэтому запросы будут "
+                    "поставлены на паузу."
+                )
+            )
+            text = (
+                f"🧩 <b>Поиск #{search.id}: Avito запросил проверку.</b>\n"
+                f"Текущая сессия завершена без ожидания. {action}"
+            )
+        elif isinstance(_exc, AvitoHardBlockedError):
+            action = (
+                "Бот уже закрыл заблокированную сессию и переключает маршрут/IP."
+                if rotation_enabled
+                else (
+                    "Заблокированная сессия закрыта; смена IP недоступна, "
+                    "поэтому запросы поставлены на паузу."
+                )
+            )
+            text = (
+                f"🚫 <b>Поиск #{search.id}: Avito заблокировал IP.</b>\n"
+                f"{action}"
+            )
+        else:
+            text = (
+                f"⏳ <b>Поиск #{search.id}: Avito ограничил доступ.</b>\n"
+                f"Обновление через {wait_text} секунд. {next_action}"
+            )
+        try:
+            try:
+                await self.bot.send_message(search.chat_id, text)
+            except TelegramRetryAfter as retry:
+                logger.warning(
+                    "Telegram просит подождать %s с; промежуточное "
+                    "уведомление пропущено, чтобы не задерживать смену IP",
+                    retry.retry_after,
+                )
+
+        except TelegramForbiddenError:
+            await self.database.set_active(search.id, search.chat_id, False)
+        except Exception:
+            # A Telegram outage must never interrupt Avito block handling or turn it
+            # into a fresh short-retry fetch.
+            logger.exception(
+                "Не удалось отправить промежуточное уведомление о блокировке поиска #%s",
+                search.id,
+            )
 
     async def _send_pending(self, search: Search) -> int:
         pending = await self.database.pending_items(
@@ -310,7 +374,7 @@ class MonitorService:
         if item.image_url:
             try:
                 await self.bot.send_photo(
-                    chat_id=search.user_id,
+                    chat_id=search.chat_id,
                     photo=item.image_url,
                     caption=text,
                     reply_markup=keyboard,
@@ -323,7 +387,7 @@ class MonitorService:
                     exc,
                 )
         await self.bot.send_message(
-            chat_id=search.user_id,
+            chat_id=search.chat_id,
             text=text,
             reply_markup=keyboard,
             link_preview_options=LinkPreviewOptions(is_disabled=True),
@@ -344,3 +408,43 @@ class MonitorService:
             await self.database.postpone_active_searches(retry_seconds)
         await self.database.mark_failure(search.id, str(exc), retry_seconds)
         logger.warning("Поиск #%s не проверен: %s", search.id, exc)
+
+        should_notify = search.failure_count in {0, 2, 5}
+        if exc.retry_after_seconds is not None:
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            should_notify = self._cooldown_notified_until.get(search.chat_id, 0) <= now
+            if should_notify:
+                self._cooldown_notified_until[search.chat_id] = now + retry_seconds
+
+        if should_notify:
+            if exc.retry_after_seconds is not None:
+                hours = max(1, round(retry_seconds / 3600))
+                hint = f" Все запросы к Avito поставлены на паузу примерно на {hours} ч."
+            elif blocked:
+                hint = (
+                    " Avito запросил капчу или ограничил IP. "
+                    "Проверьте обычное подключение Raspberry Pi."
+                )
+            else:
+                hint = " Следующая попытка будет выполнена автоматически."
+            try:
+                error_text = (
+                    f"⚠️ Поиск #{search.id} временно не проверен: {html.escape(str(exc))}.{hint}"
+                )
+                try:
+                    await self.bot.send_message(search.chat_id, error_text)
+                except TelegramRetryAfter as retry:
+                    await asyncio.sleep(retry.retry_after)
+                    await self.bot.send_message(search.chat_id, error_text)
+
+            except TelegramForbiddenError:
+                await self.database.set_active(search.id, search.chat_id, False)
+            except Exception:
+                # Telegram availability is independent from the Avito request
+                # schedule.  Keep the persisted cooldown; do not turn a delivery
+                # failure into another Avito request.
+                logger.exception(
+                    "Не удалось отправить итоговое уведомление об ошибке поиска #%s",
+                    search.id,
+                )

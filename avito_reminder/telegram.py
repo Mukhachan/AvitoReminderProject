@@ -26,10 +26,6 @@ from .models import Search
 from .service import CheckResult, MonitorService, format_price
 
 router = Router(name=__name__)
-# Searches contain personal preferences and notifications. Keeping the bot in
-# private chats prevents another group member from seeing someone else's cards.
-router.message.filter(F.chat.type == "private")
-router.callback_query.filter(F.message.chat.type == "private")
 
 CANCEL_TEXT = "❌ Отмена"
 BACK_TEXT = "⬅️ Назад"
@@ -110,10 +106,6 @@ BOT_COMMANDS = [
 def _command_argument(message: Message) -> str:
     text = message.text or ""
     return text.partition(" ")[2].strip()
-
-
-def _message_user_id(message: Message) -> int:
-    return message.from_user.id if message.from_user is not None else message.chat.id
 
 
 def _parse_price(value: str) -> int | None:
@@ -303,10 +295,7 @@ def _confirmation_text(data: dict[str, object]) -> str:
 
 def _result_text(result: CheckResult) -> str:
     if result.error:
-        return (
-            "Готово. Бот продолжит поиск автоматически и напишет, "
-            "когда найдёт новое объявление."
-        )
+        return f"⚠️ Проверка не выполнена: {html.escape(result.error)}"
     return (
         f"✅ Проверка завершена: найдено {result.found}, "
         f"новых {result.new}, отправлено {result.sent}."
@@ -355,7 +344,6 @@ async def _create_search(
     message: Message,
     database: Database,
     *,
-    owner_user_id: int,
     query: str,
     city: str,
     price_min: int | None,
@@ -364,7 +352,7 @@ async def _create_search(
     minimum_interval_seconds: int = 30 * 60,
 ) -> Search | None:
     interval_seconds = max(interval_seconds, minimum_interval_seconds)
-    existing = await database.list_user_searches(owner_user_id)
+    existing = await database.list_searches(message.chat.id)
     if len(existing) >= 20:
         await message.answer(
             "Достигнут лимит: не более 20 поисков на чат.",
@@ -388,11 +376,10 @@ async def _create_search(
         await message.answer("Главное меню", reply_markup=MAIN_KEYBOARD)
         return None
 
+    user_id = message.from_user.id if message.from_user else message.chat.id
     search = await database.add_search(
-        # Telegram private-chat IDs equal the user's ID. Store it explicitly as
-        # the delivery destination so notifications can never go to a group.
-        chat_id=owner_user_id,
-        user_id=owner_user_id,
+        chat_id=message.chat.id,
+        user_id=user_id,
         query=query,
         city=city,
         price_min=price_min,
@@ -413,7 +400,7 @@ async def _create_search(
 @router.message(Command("menu"))
 async def start(message: Message, state: FSMContext, database: Database) -> None:
     await state.clear()
-    searches = await database.list_user_searches(_message_user_id(message))
+    searches = await database.list_searches(message.chat.id)
     active = sum(search.active for search in searches)
     await message.answer(
         "<b>Avito Reminder</b> следит за новыми объявлениями и присылает их сюда.\n\n"
@@ -581,7 +568,6 @@ async def add_search_callback(
     await _create_search(
         callback.message,
         database,
-        owner_user_id=callback.from_user.id,
         query=str(data["query"]),
         city=str(data["city"]),
         price_min=price_min,
@@ -594,7 +580,7 @@ async def add_search_callback(
 @router.message(Command("list"))
 @router.message(F.text == "📋 Мои поиски")
 async def list_searches(message: Message, database: Database) -> None:
-    searches = await database.list_user_searches(_message_user_id(message))
+    searches = await database.list_searches(message.chat.id)
     if not searches:
         await message.answer(
             "У вас пока нет поисков. Нажмите «➕ Добавить поиск».",
@@ -613,14 +599,16 @@ async def list_searches(message: Message, database: Database) -> None:
 @router.message(Command("status"))
 @router.message(F.text == "📊 Статус")
 async def status_message(message: Message, database: Database) -> None:
-    searches = await database.list_user_searches(_message_user_id(message))
+    searches = await database.list_searches(message.chat.id)
     active = sum(search.active for search in searches)
     paused = len(searches) - active
+    errors = sum(bool(search.last_error) for search in searches)
     await message.answer(
         "<b>Состояние мониторинга</b>\n\n"
         f"🔎 Всего поисков: <b>{len(searches)}</b>\n"
         f"🟢 Активных: <b>{active}</b>\n"
-        f"⏸ Приостановлено: <b>{paused}</b>",
+        f"⏸ Приостановлено: <b>{paused}</b>\n"
+        f"⚠️ С последней ошибкой: <b>{errors}</b>",
         reply_markup=MAIN_KEYBOARD,
     )
 
@@ -638,14 +626,12 @@ async def check_command(message: Message, database: Database, service: MonitorSe
     search_id = await _id_from_command(message, "check")
     if search_id is None:
         return
-    search = await database.get_user_search(search_id, _message_user_id(message))
+    search = await database.get_search(search_id, message.chat.id)
     if search is None:
         await message.answer("Поиск не найден.")
         return
-    await message.answer("⏳ Открываю Avito и проверяю новые объявления прямо сейчас…")
-    await message.answer(
-        _result_text(await service.check_search(search, force_refresh=True))
-    )
+    await message.answer("⏳ Проверяю. Из-за режима работы Avito это займёт несколько минут…")
+    await message.answer(_result_text(await service.check_search(search)))
 
 
 async def _toggle_command(message: Message, database: Database, active: bool) -> None:
@@ -653,9 +639,7 @@ async def _toggle_command(message: Message, database: Database, active: bool) ->
     search_id = await _id_from_command(message, command)
     if search_id is None:
         return
-    changed = await database.set_user_search_active(
-        search_id, _message_user_id(message), active
-    )
+    changed = await database.set_active(search_id, message.chat.id, active)
     await message.answer("Готово." if changed else "Поиск не найден.", reply_markup=MAIN_KEYBOARD)
 
 
@@ -674,7 +658,7 @@ async def delete_command(message: Message, database: Database) -> None:
     search_id = await _id_from_command(message, "delete")
     if search_id is None:
         return
-    search = await database.get_user_search(search_id, _message_user_id(message))
+    search = await database.get_search(search_id, message.chat.id)
     if search is None:
         await message.answer("Поиск не найден.")
         return
@@ -699,20 +683,20 @@ async def search_callback(
     except (ValueError, TypeError):
         await callback.answer("Некорректная команда", show_alert=True)
         return
-    user_id = callback.from_user.id
-    search = await database.get_user_search(search_id, user_id)
+    chat_id = callback.message.chat.id
+    search = await database.get_search(search_id, chat_id)
     if search is None:
         await callback.answer("Поиск уже удалён", show_alert=True)
         return
 
     if action == "check":
-        await callback.answer("Свежая проверка запущена")
+        await callback.answer("Проверка запущена")
         progress = await callback.message.answer(
-            "⏳ Открываю Avito и проверяю новые объявления прямо сейчас…"
+            "⏳ Проверяю. Из-за режима работы Avito это займёт несколько минут…"
         )
-        result = await service.check_search(search, force_refresh=True)
+        result = await service.check_search(search)
         await progress.edit_text(_result_text(result))
-        updated = await database.get_user_search(search_id, user_id)
+        updated = await database.get_search(search_id, chat_id)
         if updated:
             await _safe_edit_text(
                 callback.message,
@@ -721,9 +705,9 @@ async def search_callback(
             )
     elif action in {"pause", "resume"}:
         active = action == "resume"
-        await database.set_user_search_active(search_id, user_id, active)
+        await database.set_active(search_id, chat_id, active)
         await callback.answer("Поиск возобновлён" if active else "Поиск приостановлен")
-        updated = await database.get_user_search(search_id, user_id)
+        updated = await database.get_search(search_id, chat_id)
         if updated:
             await _safe_edit_text(
                 callback.message,
@@ -737,7 +721,7 @@ async def search_callback(
         await callback.answer("Удаление отменено")
         await callback.message.edit_reply_markup(reply_markup=_search_keyboard(search))
     elif action == "delete":
-        await database.delete_user_search(search_id, user_id)
+        await database.delete_search(search_id, chat_id)
         await callback.answer("Поиск удалён")
         await callback.message.edit_text(f"🗑 Поиск #{search_id} удалён.")
     else:

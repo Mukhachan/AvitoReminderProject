@@ -136,7 +136,6 @@ def test_monitor_sends_new_item_once(tmp_path) -> None:
         assert (second.new, second.sent) == (0, 0)
         assert bot.messages == []
         assert len(bot.photos) == 1
-        assert bot.photos[0][0] == search.user_id
         assert bot.photos[0][1] == "https://images.example.test/telefon.jpg"
         assert "Новый телефон" in bot.photos[0][2]
         assert "Новое объявление по поиску" not in bot.photos[0][2]
@@ -175,12 +174,12 @@ def test_monitor_postpones_search_for_cooldown_period(tmp_path) -> None:
             updated.last_checked_at
         )
         assert retry_delay.total_seconds() == 10_800
-        assert bot.messages == []
+        assert any("на паузу" in text for _, text in bot.messages)
 
     asyncio.run(scenario())
 
 
-def test_monitor_keeps_avito_error_internal(tmp_path) -> None:
+def test_monitor_reports_avito_error_without_sending_screenshot(tmp_path) -> None:
     async def scenario() -> None:
         cfg = settings(tmp_path / "service.db")
         database = Database(cfg.database_path)
@@ -207,13 +206,13 @@ def test_monitor_keeps_avito_error_internal(tmp_path) -> None:
         result = await service.check_search(search)
 
         assert result.error == "Chromium получил от Avito HTTP 403"
-        assert bot.messages == []
+        assert len(bot.messages) == 1
         assert bot.photos == []
 
     asyncio.run(scenario())
 
 
-def test_monitor_keeps_visible_captcha_internal(tmp_path) -> None:
+def test_monitor_tells_user_to_complete_visible_captcha(tmp_path) -> None:
     async def scenario() -> None:
         cfg = settings(
             tmp_path / "service.db",
@@ -245,7 +244,11 @@ def test_monitor_keeps_visible_captcha_internal(tmp_path) -> None:
             AvitoCaptchaRequiredError("Нажмите для подтверждения"),
         )
 
-        assert bot.messages == []
+        assert len(bot.messages) == 1
+        message = bot.messages[0][1]
+        assert "Avito запросил проверку" in message
+        assert "без ожидания" in message
+        assert "смена IP недоступна" in message
 
     asyncio.run(scenario())
 
@@ -294,39 +297,7 @@ def test_monitor_reuses_cached_result_for_same_url(tmp_path) -> None:
     asyncio.run(scenario())
 
 
-def test_forced_manual_check_bypasses_cached_result(tmp_path) -> None:
-    async def scenario() -> None:
-        cfg = settings(tmp_path / "forced-refresh.db", search_result_cache_seconds=600)
-        database = Database(cfg.database_path)
-        await database.initialize()
-        search = await database.add_search(
-            chat_id=10,
-            user_id=20,
-            query="телефон",
-            city="Москва",
-            price_min=None,
-            price_max=None,
-            url="https://www.avito.ru/moskva?q=телефон",
-        )
-        client = FakeClient()
-        service = MonitorService(
-            bot=FakeBot(),  # type: ignore[arg-type]
-            database=database,
-            client=client,  # type: ignore[arg-type]
-            settings=cfg,
-        )
-
-        await service.check_search(search)
-        refreshed = await database.get_search(search.id)
-        assert refreshed is not None
-        await service.check_search(refreshed, force_refresh=True)
-
-        assert client.calls == 2
-
-    asyncio.run(scenario())
-
-
-def test_captcha_with_proxy_rotation_sends_no_technical_message(tmp_path) -> None:
+def test_captcha_message_describes_single_rotation_when_pool_is_enabled(tmp_path) -> None:
     async def scenario() -> None:
         cfg = settings(
             tmp_path / "service.db",
@@ -361,12 +332,12 @@ def test_captcha_with_proxy_rotation_sends_no_technical_message(tmp_path) -> Non
             AvitoCaptchaRequiredError("Нажмите для подтверждения"),
         )
 
-        assert bot.messages == []
+        assert "сменит пользователя и IP один раз" in bot.messages[0][1]
 
     asyncio.run(scenario())
 
 
-def test_captcha_with_fallback_proxy_sends_no_technical_message(
+def test_captcha_message_reports_direct_to_single_fallback_proxy_rotation(
     tmp_path,
 ) -> None:
     async def scenario() -> None:
@@ -400,7 +371,8 @@ def test_captcha_with_fallback_proxy_sends_no_technical_message(
             AvitoCaptchaRequiredError("captcha"),
         )
 
-        assert bot.messages == []
+        assert len(bot.messages) == 1
+        assert "сменит пользователя и IP" in bot.messages[0][1]
 
     asyncio.run(scenario())
 
@@ -445,7 +417,7 @@ def test_telegram_rate_limit_does_not_delay_avito_block_handling(tmp_path) -> No
     asyncio.run(scenario())
 
 
-def test_hard_ip_block_sends_no_technical_message(tmp_path) -> None:
+def test_hard_ip_block_message_does_not_claim_transient_reload_wait(tmp_path) -> None:
     async def scenario() -> None:
         cfg = settings(tmp_path / "service.db")
         database = Database(cfg.database_path)
@@ -471,12 +443,15 @@ def test_hard_ip_block_sends_no_technical_message(tmp_path) -> None:
 
         await service._notify_avito_waiting(search, error)
 
-        assert bot.messages == []
+        message = bot.messages[0][1]
+        assert "Avito заблокировал IP" in message
+        assert "уже закрыл" in message
+        assert "Обновление через" not in message
 
     asyncio.run(scenario())
 
 
-def test_hard_ip_block_without_rotation_hint_sends_no_technical_message(
+def test_hard_ip_block_without_rotation_hint_still_uses_hard_block_message(
     tmp_path,
 ) -> None:
     async def scenario() -> None:
@@ -502,7 +477,10 @@ def test_hard_ip_block_without_rotation_hint_sends_no_technical_message(
 
         await service._notify_avito_waiting(search, AvitoHardBlockedError("hard block"))
 
-        assert bot.messages == []
+        message = bot.messages[0][1]
+        assert "Avito заблокировал IP" in message
+        assert "Заблокированная сессия закрыта" in message
+        assert "Обновление через" not in message
 
     asyncio.run(scenario())
 
@@ -651,7 +629,7 @@ def test_pending_telegram_retry_does_not_fetch_avito_again(tmp_path) -> None:
     asyncio.run(scenario())
 
 
-def test_scheduled_check_honours_persisted_global_cooldown(tmp_path) -> None:
+def test_manual_check_honours_persisted_global_cooldown(tmp_path) -> None:
     async def scenario() -> None:
         cfg = settings(tmp_path / "manual-cooldown.db")
         database = Database(cfg.database_path)
@@ -678,38 +656,6 @@ def test_scheduled_check_honours_persisted_global_cooldown(tmp_path) -> None:
 
         assert result.error is not None and "cooldown" in result.error
         assert client.calls == 0
-
-    asyncio.run(scenario())
-
-
-def test_forced_manual_check_bypasses_schedule_cooldown(tmp_path) -> None:
-    async def scenario() -> None:
-        cfg = settings(tmp_path / "forced-cooldown.db")
-        database = Database(cfg.database_path)
-        await database.initialize()
-        search = await database.add_search(
-            chat_id=10,
-            user_id=20,
-            query="phone",
-            city="Moscow",
-            price_min=None,
-            price_max=None,
-            url="https://www.avito.ru/moskva?q=phone",
-        )
-        await database.postpone_active_searches(3600)
-        client = FakeClient()
-        service = MonitorService(
-            bot=FakeBot(),  # type: ignore[arg-type]
-            database=database,
-            client=client,  # type: ignore[arg-type]
-            settings=cfg,
-        )
-
-        result = await service.check_search(search, force_refresh=True)
-
-        assert result.error is None
-        assert result.found == 1
-        assert client.calls == 1
 
     asyncio.run(scenario())
 
