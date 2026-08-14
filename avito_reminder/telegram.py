@@ -54,7 +54,7 @@ CITY_KEYBOARD = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
-PRICE_KEYBOARD = ReplyKeyboardMarkup(
+PRICE_RANGE_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=SKIP_TEXT)],
         [KeyboardButton(text=BACK_TEXT), KeyboardButton(text=CANCEL_TEXT)],
@@ -84,8 +84,7 @@ INTERVAL_KEYBOARD = ReplyKeyboardMarkup(
 class AddSearch(StatesGroup):
     query = State()
     city = State()
-    price_min = State()
-    price_max = State()
+    price_range = State()
     interval = State()
     confirm = State()
 
@@ -93,7 +92,6 @@ class AddSearch(StatesGroup):
 BOT_COMMANDS = [
     BotCommand(command="start", description="Открыть главное меню"),
     BotCommand(command="menu", description="Показать кнопки меню"),
-    BotCommand(command="add", description="Создать поиск по шагам"),
     BotCommand(command="list", description="Показать мои поиски"),
     BotCommand(command="status", description="Сводка мониторинга"),
     BotCommand(command="check", description="Проверить поиск сейчас"),
@@ -121,6 +119,37 @@ def _parse_price(value: str) -> int | None:
     if price > 2_000_000_000:
         raise ValueError("Слишком большое значение цены")
     return price
+
+
+def _parse_price_range(value: str) -> tuple[int | None, int | None]:
+    normalized = " ".join(value.strip().lower().split())
+    if normalized in {"", "-", "нет", "пропустить", "без ограничения", "0"}:
+        return None, None
+
+    match = re.fullmatch(r"от\s+(.+?)\s+до\s+(.+)", normalized)
+    if match:
+        price_min = _parse_price(match.group(1))
+        price_max = _parse_price(match.group(2))
+    else:
+        match = re.fullmatch(r"(.+?)\s*[-–—]\s*(.+)", normalized)
+        if match:
+            price_min = _parse_price(match.group(1))
+            price_max = _parse_price(match.group(2))
+        elif normalized.startswith("от "):
+            price_min = _parse_price(normalized[3:])
+            price_max = None
+        elif normalized.startswith("до "):
+            price_min = None
+            price_max = _parse_price(normalized[3:])
+        else:
+            # A single amount is treated as the upper limit: this is the most
+            # common short answer to the price-range question.
+            price_min = None
+            price_max = _parse_price(normalized)
+
+    if price_min is not None and price_max is not None and price_min > price_max:
+        raise ValueError("Максимальная цена не может быть меньше минимальной")
+    return price_min, price_max
 
 
 def _parse_interval(value: str, minimum_seconds: int = 30 * 60) -> int:
@@ -278,7 +307,7 @@ def _result_text(result: CheckResult) -> str:
 
 async def _ask_query(message: Message) -> None:
     await message.answer(
-        "<b>Шаг 1 из 5 · Что ищем?</b>\n\n"
+        "<b>Шаг 1 из 4 · Что ищем?</b>\n\n"
         "Напишите название товара так, как искали бы его на Avito.\n"
         "Например: <i>iPhone 13 128 GB</i>",
         reply_markup=QUERY_KEYBOARD,
@@ -287,31 +316,28 @@ async def _ask_query(message: Message) -> None:
 
 async def _ask_city(message: Message) -> None:
     await message.answer(
-        "<b>Шаг 2 из 5 · Где искать?</b>\n\n"
+        "<b>Шаг 2 из 4 · Где искать?</b>\n\n"
         "Выберите популярный вариант или напишите свой город.",
         reply_markup=CITY_KEYBOARD,
     )
 
 
-async def _ask_price_min(message: Message) -> None:
+async def _ask_price_range(message: Message) -> None:
     await message.answer(
-        "<b>Шаг 3 из 5 · Минимальная цена</b>\n\n"
-        "Введите сумму в рублях или нажмите «Без ограничения».",
-        reply_markup=PRICE_KEYBOARD,
-    )
-
-
-async def _ask_price_max(message: Message) -> None:
-    await message.answer(
-        "<b>Шаг 4 из 5 · Максимальная цена</b>\n\n"
-        "Введите сумму в рублях или нажмите «Без ограничения».",
-        reply_markup=PRICE_KEYBOARD,
+        "<b>Шаг 3 из 4 · Диапазон цены</b>\n\n"
+        "Напишите диапазон одним сообщением. Например:\n"
+        "• <code>30000–50000</code>\n"
+        "• <code>до 50000</code>\n"
+        "• <code>от 30000</code>\n\n"
+        "Одно число будет считаться максимальной ценой. Можно выбрать "
+        "«Без ограничения».",
+        reply_markup=PRICE_RANGE_KEYBOARD,
     )
 
 
 async def _ask_interval(message: Message) -> None:
     await message.answer(
-        "<b>Шаг 5 из 5 · Частота проверки</b>\n\n"
+        "<b>Шаг 4 из 4 · Частота проверки</b>\n\n"
         "Как часто проверять новые объявления? Рекомендуется 30 минут или реже.",
         reply_markup=INTERVAL_KEYBOARD,
     )
@@ -393,12 +419,12 @@ async def help_message(message: Message) -> None:
     await message.answer(
         "<b>Как пользоваться ботом</b>\n\n"
         "1. Нажмите «➕ Добавить поиск».\n"
-        "2. Ответьте на пять коротких вопросов.\n"
+        "2. Ответьте отдельными сообщениями на четыре коротких вопроса.\n"
         "3. Проверьте параметры и подтвердите создание.\n"
         "4. Бот будет присылать только новые объявления.\n\n"
         "В разделе «📋 Мои поиски» можно открыть выдачу Avito, запустить проверку, "
         "приостановить или удалить подписку.\n\n"
-        "Команды: /add, /list, /status, /check 1, /pause 1, /resume 1, /delete 1.",
+        "Для создания поиска используйте кнопку в главном меню.",
         reply_markup=MAIN_KEYBOARD,
     )
 
@@ -412,43 +438,12 @@ async def cancel(message: Message, state: FSMContext) -> None:
     await message.answer(text, reply_markup=MAIN_KEYBOARD)
 
 
-@router.message(Command("add"))
 @router.message(F.text == "➕ Добавить поиск")
 async def add_search_start(
     message: Message,
     state: FSMContext,
-    database: Database,
-    settings: Settings,
 ) -> None:
     await state.clear()
-    argument = _command_argument(message)
-    if argument:
-        parts = [part.strip() for part in argument.split("|")]
-        if len(parts) != 4:
-            await message.answer(
-                "Формат: /add Город | Запрос | Цена от | Цена до\n"
-                "Пример: /add Москва | iPhone 13 | 30000 | 50000",
-                reply_markup=MAIN_KEYBOARD,
-            )
-            return
-        try:
-            price_min = _parse_price(parts[2])
-            price_max = _parse_price(parts[3])
-        except ValueError as exc:
-            await message.answer(html.escape(str(exc)), reply_markup=MAIN_KEYBOARD)
-            return
-        await _create_search(
-            message,
-            database,
-            query=parts[1],
-            city=parts[0],
-            price_min=price_min,
-            price_max=price_max,
-            interval_seconds=settings.search_interval_seconds,
-            minimum_interval_seconds=settings.search_interval_seconds,
-        )
-        return
-
     await state.set_state(AddSearch.query)
     await _ask_query(message)
 
@@ -478,43 +473,25 @@ async def add_city(message: Message, state: FSMContext) -> None:
         await message.answer("Название города должно содержать от 2 до 80 символов.")
         return
     await state.update_data(city=city)
-    await state.set_state(AddSearch.price_min)
-    await _ask_price_min(message)
+    await state.set_state(AddSearch.price_range)
+    await _ask_price_range(message)
 
 
-@router.message(AddSearch.price_min, F.text)
-async def add_price_min(message: Message, state: FSMContext) -> None:
+@router.message(AddSearch.price_range, F.text)
+async def add_price_range(message: Message, state: FSMContext) -> None:
     if message.text == BACK_TEXT:
         await state.set_state(AddSearch.city)
         await _ask_city(message)
         return
     try:
-        value = _parse_price(message.text or "")
+        price_min, price_max = _parse_price_range(message.text or "")
     except ValueError as exc:
-        await message.answer(html.escape(str(exc)))
+        await message.answer(
+            f"{html.escape(str(exc))}. Например: <code>30000–50000</code>, "
+            "<code>до 50000</code> или «Без ограничения»."
+        )
         return
-    await state.update_data(price_min=value)
-    await state.set_state(AddSearch.price_max)
-    await _ask_price_max(message)
-
-
-@router.message(AddSearch.price_max, F.text)
-async def add_price_max(message: Message, state: FSMContext) -> None:
-    if message.text == BACK_TEXT:
-        await state.set_state(AddSearch.price_min)
-        await _ask_price_min(message)
-        return
-    try:
-        price_max = _parse_price(message.text or "")
-    except ValueError as exc:
-        await message.answer(html.escape(str(exc)))
-        return
-    data = await state.get_data()
-    price_min = data.get("price_min")
-    if isinstance(price_min, int) and price_max is not None and price_min > price_max:
-        await message.answer("Максимальная цена не может быть меньше минимальной.")
-        return
-    await state.update_data(price_max=price_max)
+    await state.update_data(price_min=price_min, price_max=price_max)
     await state.set_state(AddSearch.interval)
     await _ask_interval(message)
 
@@ -522,8 +499,8 @@ async def add_price_max(message: Message, state: FSMContext) -> None:
 @router.message(AddSearch.interval, F.text)
 async def add_interval(message: Message, state: FSMContext, settings: Settings) -> None:
     if message.text == BACK_TEXT:
-        await state.set_state(AddSearch.price_max)
-        await _ask_price_max(message)
+        await state.set_state(AddSearch.price_range)
+        await _ask_price_range(message)
         return
     try:
         interval_seconds = _parse_interval(

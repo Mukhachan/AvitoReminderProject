@@ -10,6 +10,7 @@ from avito_reminder.telegram import (
     _format_interval,
     _parse_interval,
     _parse_price,
+    _parse_price_range,
     _result_text,
     _safe_edit_text,
     _search_keyboard,
@@ -27,6 +28,26 @@ from avito_reminder.telegram import (
 )
 def test_parse_price_for_wizard(value, expected) -> None:
     assert _parse_price(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("30 000–50 000", (30_000, 50_000)),
+        ("от 30000 до 50000", (30_000, 50_000)),
+        ("от 30 000 ₽", (30_000, None)),
+        ("до 50 000 ₽", (None, 50_000)),
+        ("50000", (None, 50_000)),
+        ("Без ограничения", (None, None)),
+    ],
+)
+def test_parse_price_range_from_one_message(value, expected) -> None:
+    assert _parse_price_range(value) == expected
+
+
+def test_parse_price_range_rejects_reversed_bounds() -> None:
+    with pytest.raises(ValueError, match="Максимальная цена"):
+        _parse_price_range("50000–30000")
 
 
 @pytest.mark.parametrize(
