@@ -136,6 +136,7 @@ def test_monitor_sends_new_item_once(tmp_path) -> None:
         assert (second.new, second.sent) == (0, 0)
         assert bot.messages == []
         assert len(bot.photos) == 1
+        assert bot.photos[0][0] == search.user_id
         assert bot.photos[0][1] == "https://images.example.test/telefon.jpg"
         assert "Новый телефон" in bot.photos[0][2]
         assert "Новое объявление по поиску" not in bot.photos[0][2]

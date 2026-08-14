@@ -198,7 +198,7 @@ class MonitorService:
                 await self.database.clear_pending_delivery_retry(search.id)
                 logger.warning(
                     "Бот заблокирован в чате %s; поиск #%s приостановлен",
-                    search.chat_id,
+                    search.user_id,
                     search.id,
                 )
                 return CheckResult(
@@ -292,7 +292,7 @@ class MonitorService:
         if item.image_url:
             try:
                 await self.bot.send_photo(
-                    chat_id=search.chat_id,
+                    chat_id=search.user_id,
                     photo=item.image_url,
                     caption=text,
                     reply_markup=keyboard,
@@ -305,7 +305,7 @@ class MonitorService:
                     exc,
                 )
         await self.bot.send_message(
-            chat_id=search.chat_id,
+            chat_id=search.user_id,
             text=text,
             reply_markup=keyboard,
             link_preview_options=LinkPreviewOptions(is_disabled=True),

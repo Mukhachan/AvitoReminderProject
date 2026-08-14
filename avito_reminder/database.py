@@ -73,6 +73,8 @@ class Database:
                     ON searches(active, next_check_at);
                 CREATE INDEX IF NOT EXISTS idx_searches_chat
                     ON searches(chat_id, id);
+                CREATE INDEX IF NOT EXISTS idx_searches_user
+                    ON searches(user_id, id);
 
                 CREATE TABLE IF NOT EXISTS seen_items (
                     search_id INTEGER NOT NULL,
@@ -242,6 +244,27 @@ class Database:
             ).fetchall()
         return [search for row in rows if (search := self._search(row)) is not None]
 
+    async def get_user_search(self, search_id: int, user_id: int) -> Search | None:
+        return await asyncio.to_thread(self._get_user_search, search_id, user_id)
+
+    def _get_user_search(self, search_id: int, user_id: int) -> Search | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM searches WHERE id = ? AND user_id = ?",
+                (search_id, user_id),
+            ).fetchone()
+        return self._search(row)
+
+    async def list_user_searches(self, user_id: int) -> list[Search]:
+        return await asyncio.to_thread(self._list_user_searches, user_id)
+
+    def _list_user_searches(self, user_id: int) -> list[Search]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM searches WHERE user_id = ? ORDER BY id", (user_id,)
+            ).fetchall()
+        return [search for row in rows if (search := self._search(row)) is not None]
+
     async def due_searches(self, limit: int = 50) -> list[Search]:
         return await asyncio.to_thread(self._due_searches, limit)
 
@@ -275,6 +298,27 @@ class Database:
             cursor = connection.execute(
                 "UPDATE searches SET active = ?, next_check_at = ? WHERE id = ? AND chat_id = ?",
                 (int(active), as_iso(next_check), search_id, chat_id),
+            )
+            return cursor.rowcount > 0
+
+    async def set_user_search_active(
+        self, search_id: int, user_id: int, active: bool
+    ) -> bool:
+        return await asyncio.to_thread(
+            self._set_user_search_active, search_id, user_id, active
+        )
+
+    def _set_user_search_active(self, search_id: int, user_id: int, active: bool) -> bool:
+        next_check = utc_now()
+        with self._connect() as connection:
+            if active:
+                not_before = self._avito_not_before_from_connection(connection)
+                next_check = max(next_check, not_before or next_check)
+                next_check += timedelta(seconds=self._spread_delay(search_id))
+            cursor = connection.execute(
+                "UPDATE searches SET active = ?, next_check_at = ? "
+                "WHERE id = ? AND user_id = ?",
+                (int(active), as_iso(next_check), search_id, user_id),
             )
             return cursor.rowcount > 0
 
@@ -339,6 +383,16 @@ class Database:
         with self._connect() as connection:
             cursor = connection.execute(
                 "DELETE FROM searches WHERE id = ? AND chat_id = ?", (search_id, chat_id)
+            )
+            return cursor.rowcount > 0
+
+    async def delete_user_search(self, search_id: int, user_id: int) -> bool:
+        return await asyncio.to_thread(self._delete_user_search, search_id, user_id)
+
+    def _delete_user_search(self, search_id: int, user_id: int) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM searches WHERE id = ? AND user_id = ?", (search_id, user_id)
             )
             return cursor.rowcount > 0
 
