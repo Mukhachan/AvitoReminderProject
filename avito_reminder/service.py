@@ -73,12 +73,18 @@ class MonitorService:
         self._search_cache: dict[str, _CachedSearchResult] = {}
         self._url_locks: dict[str, asyncio.Lock] = {}
 
-    async def _search_items(self, search: Search, *, on_blocked) -> list[AvitoItem]:
+    async def _search_items(
+        self,
+        search: Search,
+        *,
+        on_blocked,
+        force_refresh: bool = False,
+    ) -> list[AvitoItem]:
         lock = self._url_locks.setdefault(search.url, asyncio.Lock())
         async with lock:
             now = time.monotonic()
             cached = self._search_cache.get(search.url)
-            if cached is not None and cached.expires_at > now:
+            if not force_refresh and cached is not None and cached.expires_at > now:
                 logger.info(
                     "Поиск #%s использует общий кэш URL: осталось %.1f с",
                     search.id,
@@ -146,7 +152,9 @@ class MonitorService:
     def stop(self) -> None:
         self._stop.set()
 
-    async def check_search(self, search: Search) -> CheckResult:
+    async def check_search(
+        self, search: Search, *, force_refresh: bool = False
+    ) -> CheckResult:
         lock = self._locks.setdefault(search.id, asyncio.Lock())
         if lock.locked():
             return CheckResult(found=0, new=0, sent=0, error="Проверка уже выполняется")
@@ -157,7 +165,7 @@ class MonitorService:
             async with self._semaphore:
                 try:
                     retry_after = await self.database.avito_retry_after_seconds()
-                    if retry_after:
+                    if retry_after and not force_refresh:
                         await self.database.mark_failure(
                             search.id,
                             "Global Avito cooldown is still active",
@@ -169,7 +177,17 @@ class MonitorService:
                             0,
                             f"Avito cooldown is active for {retry_after} more seconds",
                         )
-                    items = await self._search_items(search, on_blocked=notify_blocked)
+                    if retry_after:
+                        logger.info(
+                            "Ручная проверка поиска #%s обходит паузу расписания; "
+                            "карантин маршрутов Avito остаётся активным",
+                            search.id,
+                        )
+                    items = await self._search_items(
+                        search,
+                        on_blocked=notify_blocked,
+                        force_refresh=force_refresh,
+                    )
                     should_notify = search.initialized or self.settings.notify_initial_results
                     new_count = await self.database.record_items(
                         search.id,

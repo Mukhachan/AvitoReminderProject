@@ -294,6 +294,38 @@ def test_monitor_reuses_cached_result_for_same_url(tmp_path) -> None:
     asyncio.run(scenario())
 
 
+def test_forced_manual_check_bypasses_cached_result(tmp_path) -> None:
+    async def scenario() -> None:
+        cfg = settings(tmp_path / "forced-refresh.db", search_result_cache_seconds=600)
+        database = Database(cfg.database_path)
+        await database.initialize()
+        search = await database.add_search(
+            chat_id=10,
+            user_id=20,
+            query="телефон",
+            city="Москва",
+            price_min=None,
+            price_max=None,
+            url="https://www.avito.ru/moskva?q=телефон",
+        )
+        client = FakeClient()
+        service = MonitorService(
+            bot=FakeBot(),  # type: ignore[arg-type]
+            database=database,
+            client=client,  # type: ignore[arg-type]
+            settings=cfg,
+        )
+
+        await service.check_search(search)
+        refreshed = await database.get_search(search.id)
+        assert refreshed is not None
+        await service.check_search(refreshed, force_refresh=True)
+
+        assert client.calls == 2
+
+    asyncio.run(scenario())
+
+
 def test_captcha_with_proxy_rotation_sends_no_technical_message(tmp_path) -> None:
     async def scenario() -> None:
         cfg = settings(
@@ -619,7 +651,7 @@ def test_pending_telegram_retry_does_not_fetch_avito_again(tmp_path) -> None:
     asyncio.run(scenario())
 
 
-def test_manual_check_honours_persisted_global_cooldown(tmp_path) -> None:
+def test_scheduled_check_honours_persisted_global_cooldown(tmp_path) -> None:
     async def scenario() -> None:
         cfg = settings(tmp_path / "manual-cooldown.db")
         database = Database(cfg.database_path)
@@ -646,6 +678,38 @@ def test_manual_check_honours_persisted_global_cooldown(tmp_path) -> None:
 
         assert result.error is not None and "cooldown" in result.error
         assert client.calls == 0
+
+    asyncio.run(scenario())
+
+
+def test_forced_manual_check_bypasses_schedule_cooldown(tmp_path) -> None:
+    async def scenario() -> None:
+        cfg = settings(tmp_path / "forced-cooldown.db")
+        database = Database(cfg.database_path)
+        await database.initialize()
+        search = await database.add_search(
+            chat_id=10,
+            user_id=20,
+            query="phone",
+            city="Moscow",
+            price_min=None,
+            price_max=None,
+            url="https://www.avito.ru/moskva?q=phone",
+        )
+        await database.postpone_active_searches(3600)
+        client = FakeClient()
+        service = MonitorService(
+            bot=FakeBot(),  # type: ignore[arg-type]
+            database=database,
+            client=client,  # type: ignore[arg-type]
+            settings=cfg,
+        )
+
+        result = await service.check_search(search, force_refresh=True)
+
+        assert result.error is None
+        assert result.found == 1
+        assert client.calls == 1
 
     asyncio.run(scenario())
 

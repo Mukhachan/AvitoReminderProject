@@ -642,8 +642,10 @@ async def check_command(message: Message, database: Database, service: MonitorSe
     if search is None:
         await message.answer("Поиск не найден.")
         return
-    await message.answer("⏳ Проверяю. Из-за режима работы Avito это займёт несколько минут…")
-    await message.answer(_result_text(await service.check_search(search)))
+    await message.answer("⏳ Открываю Avito и проверяю новые объявления прямо сейчас…")
+    await message.answer(
+        _result_text(await service.check_search(search, force_refresh=True))
+    )
 
 
 async def _toggle_command(message: Message, database: Database, active: bool) -> None:
@@ -704,11 +706,11 @@ async def search_callback(
         return
 
     if action == "check":
-        await callback.answer("Проверка запущена")
+        await callback.answer("Свежая проверка запущена")
         progress = await callback.message.answer(
-            "⏳ Проверяю. Из-за режима работы Avito это займёт несколько минут…"
+            "⏳ Открываю Avito и проверяю новые объявления прямо сейчас…"
         )
-        result = await service.check_search(search)
+        result = await service.check_search(search, force_refresh=True)
         await progress.edit_text(_result_text(result))
         updated = await database.get_user_search(search_id, user_id)
         if updated:
