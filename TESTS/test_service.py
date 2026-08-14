@@ -174,12 +174,12 @@ def test_monitor_postpones_search_for_cooldown_period(tmp_path) -> None:
             updated.last_checked_at
         )
         assert retry_delay.total_seconds() == 10_800
-        assert any("на паузу" in text for _, text in bot.messages)
+        assert bot.messages == []
 
     asyncio.run(scenario())
 
 
-def test_monitor_reports_avito_error_without_sending_screenshot(tmp_path) -> None:
+def test_monitor_keeps_avito_error_internal(tmp_path) -> None:
     async def scenario() -> None:
         cfg = settings(tmp_path / "service.db")
         database = Database(cfg.database_path)
@@ -206,13 +206,13 @@ def test_monitor_reports_avito_error_without_sending_screenshot(tmp_path) -> Non
         result = await service.check_search(search)
 
         assert result.error == "Chromium получил от Avito HTTP 403"
-        assert len(bot.messages) == 1
+        assert bot.messages == []
         assert bot.photos == []
 
     asyncio.run(scenario())
 
 
-def test_monitor_tells_user_to_complete_visible_captcha(tmp_path) -> None:
+def test_monitor_keeps_visible_captcha_internal(tmp_path) -> None:
     async def scenario() -> None:
         cfg = settings(
             tmp_path / "service.db",
@@ -244,11 +244,7 @@ def test_monitor_tells_user_to_complete_visible_captcha(tmp_path) -> None:
             AvitoCaptchaRequiredError("Нажмите для подтверждения"),
         )
 
-        assert len(bot.messages) == 1
-        message = bot.messages[0][1]
-        assert "Avito запросил проверку" in message
-        assert "без ожидания" in message
-        assert "смена IP недоступна" in message
+        assert bot.messages == []
 
     asyncio.run(scenario())
 
@@ -297,7 +293,7 @@ def test_monitor_reuses_cached_result_for_same_url(tmp_path) -> None:
     asyncio.run(scenario())
 
 
-def test_captcha_message_describes_single_rotation_when_pool_is_enabled(tmp_path) -> None:
+def test_captcha_with_proxy_rotation_sends_no_technical_message(tmp_path) -> None:
     async def scenario() -> None:
         cfg = settings(
             tmp_path / "service.db",
@@ -332,12 +328,12 @@ def test_captcha_message_describes_single_rotation_when_pool_is_enabled(tmp_path
             AvitoCaptchaRequiredError("Нажмите для подтверждения"),
         )
 
-        assert "сменит пользователя и IP один раз" in bot.messages[0][1]
+        assert bot.messages == []
 
     asyncio.run(scenario())
 
 
-def test_captcha_message_reports_direct_to_single_fallback_proxy_rotation(
+def test_captcha_with_fallback_proxy_sends_no_technical_message(
     tmp_path,
 ) -> None:
     async def scenario() -> None:
@@ -371,8 +367,7 @@ def test_captcha_message_reports_direct_to_single_fallback_proxy_rotation(
             AvitoCaptchaRequiredError("captcha"),
         )
 
-        assert len(bot.messages) == 1
-        assert "сменит пользователя и IP" in bot.messages[0][1]
+        assert bot.messages == []
 
     asyncio.run(scenario())
 
@@ -417,7 +412,7 @@ def test_telegram_rate_limit_does_not_delay_avito_block_handling(tmp_path) -> No
     asyncio.run(scenario())
 
 
-def test_hard_ip_block_message_does_not_claim_transient_reload_wait(tmp_path) -> None:
+def test_hard_ip_block_sends_no_technical_message(tmp_path) -> None:
     async def scenario() -> None:
         cfg = settings(tmp_path / "service.db")
         database = Database(cfg.database_path)
@@ -443,15 +438,12 @@ def test_hard_ip_block_message_does_not_claim_transient_reload_wait(tmp_path) ->
 
         await service._notify_avito_waiting(search, error)
 
-        message = bot.messages[0][1]
-        assert "Avito заблокировал IP" in message
-        assert "уже закрыл" in message
-        assert "Обновление через" not in message
+        assert bot.messages == []
 
     asyncio.run(scenario())
 
 
-def test_hard_ip_block_without_rotation_hint_still_uses_hard_block_message(
+def test_hard_ip_block_without_rotation_hint_sends_no_technical_message(
     tmp_path,
 ) -> None:
     async def scenario() -> None:
@@ -477,10 +469,7 @@ def test_hard_ip_block_without_rotation_hint_still_uses_hard_block_message(
 
         await service._notify_avito_waiting(search, AvitoHardBlockedError("hard block"))
 
-        message = bot.messages[0][1]
-        assert "Avito заблокировал IP" in message
-        assert "Заблокированная сессия закрыта" in message
-        assert "Обновление через" not in message
+        assert bot.messages == []
 
     asyncio.run(scenario())
 

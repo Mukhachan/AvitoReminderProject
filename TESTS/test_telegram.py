@@ -4,11 +4,13 @@ import pytest
 from aiogram.exceptions import TelegramBadRequest
 
 from avito_reminder.models import Search
+from avito_reminder.service import CheckResult
 from avito_reminder.telegram import (
     _confirmation_text,
     _format_interval,
     _parse_interval,
     _parse_price,
+    _result_text,
     _safe_edit_text,
     _search_keyboard,
     _search_text,
@@ -92,6 +94,14 @@ def test_confirmation_text_summarizes_all_answers() -> None:
     assert "Велосипед" in text
     assert "от 10 000" in text
     assert _format_interval(3600) in text
+
+
+def test_manual_check_does_not_expose_technical_error() -> None:
+    text = _result_text(CheckResult(found=0, new=0, sent=0, error="HTTP 403: blocked"))
+
+    assert "403" not in text
+    assert "ошиб" not in text.lower()
+    assert "напишет" in text
 
 
 def test_safe_edit_ignores_unchanged_telegram_message() -> None:

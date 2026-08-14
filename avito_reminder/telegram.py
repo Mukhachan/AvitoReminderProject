@@ -266,7 +266,10 @@ def _confirmation_text(data: dict[str, object]) -> str:
 
 def _result_text(result: CheckResult) -> str:
     if result.error:
-        return f"⚠️ Проверка не выполнена: {html.escape(result.error)}"
+        return (
+            "Готово. Бот продолжит поиск автоматически и напишет, "
+            "когда найдёт новое объявление."
+        )
     return (
         f"✅ Проверка завершена: найдено {result.found}, "
         f"новых {result.new}, отправлено {result.sent}."
@@ -625,13 +628,11 @@ async def status_message(message: Message, database: Database) -> None:
     searches = await database.list_searches(message.chat.id)
     active = sum(search.active for search in searches)
     paused = len(searches) - active
-    errors = sum(bool(search.last_error) for search in searches)
     await message.answer(
         "<b>Состояние мониторинга</b>\n\n"
         f"🔎 Всего поисков: <b>{len(searches)}</b>\n"
         f"🟢 Активных: <b>{active}</b>\n"
-        f"⏸ Приостановлено: <b>{paused}</b>\n"
-        f"⚠️ С последней ошибкой: <b>{errors}</b>",
+        f"⏸ Приостановлено: <b>{paused}</b>",
         reply_markup=MAIN_KEYBOARD,
     )
 
