@@ -75,6 +75,22 @@ def test_extract_page_state_decodes_html_escaped_json() -> None:
     assert state.items[0].price == 42_000
 
 
+def test_extract_page_state_normalizes_protocol_relative_gallery_image() -> None:
+    catalog = _catalog()
+    items = catalog["items"]
+    assert isinstance(items, list)
+    assert isinstance(items[0], dict)
+    items[0]["gallery"] = {
+        "image_urls": [{"640x480": "//30.img.example.test/phone.jpg"}]
+    }
+    payload = {"loaderData": {"data": {**_metadata(), "catalog": catalog}}}
+
+    state = extract_page_state(_script(payload))
+
+    assert state is not None
+    assert state.items[0].image_url == "https://30.img.example.test/phone.jpg"
+
+
 def test_extract_page_state_skips_malformed_candidate_before_valid_script() -> None:
     payload = {"loaderData": {"data": {**_metadata(), "catalog": _catalog()}}}
     source = (

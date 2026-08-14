@@ -372,6 +372,27 @@ def test_parse_search_cards() -> None:
     assert items[0].title == "Apple iPhone 13 128 GB"
     assert items[0].price == 45_000
     assert items[0].location == "Москва, Арбат"
+    assert items[0].image_url == "https://example.test/iphone.jpg"
+
+
+def test_parse_search_card_uses_lazy_srcset_and_normalizes_image_url() -> None:
+    html = """
+    <div data-marker="item" data-item-id="1234567891">
+      <a data-marker="item-title" href="/moskva/telefony/phone_1234567891">
+        <h3>Телефон с lazy-фото</h3>
+      </a>
+      <picture>
+        <source data-srcset="//10.img.example.test/small.jpg 320w,
+                             //10.img.example.test/large.jpg 640w">
+        <img src="data:image/gif;base64,placeholder">
+      </picture>
+    </div>
+    """
+
+    items = parse_search_html(html)
+
+    assert len(items) == 1
+    assert items[0].image_url == "https://10.img.example.test/large.jpg"
 
 
 def test_parse_json_ld_fallback() -> None:
@@ -389,6 +410,20 @@ def test_parse_json_ld_fallback() -> None:
     html = f'<script type="application/ld+json">{json.dumps(payload)}</script>'
     items = parse_search_html(html)
     assert [(item.id, item.price) for item in items] == [("9876543210", 12_500)]
+
+
+def test_parse_json_ld_normalizes_image_list() -> None:
+    payload = {
+        "@type": "Product",
+        "name": "Фотоаппарат",
+        "url": "/moskva/fototehnika/fotoapparat_9876543211",
+        "image": ["//20.img.example.test/camera.jpg"],
+    }
+    html = f'<script type="application/ld+json">{json.dumps(payload)}</script>'
+
+    items = parse_search_html(html)
+
+    assert items[0].image_url == "https://20.img.example.test/camera.jpg"
 
 
 def test_parse_mfe_state_before_dom_fallback() -> None:

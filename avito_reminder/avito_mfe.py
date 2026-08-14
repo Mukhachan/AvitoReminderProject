@@ -76,7 +76,13 @@ def _nested_string(value: object, *path: str) -> str | None:
 
 def _first_image_url(value: object) -> str | None:
     if isinstance(value, str):
-        return value if value.startswith(("http://", "https://")) else None
+        candidate = html_lib.unescape(value.strip())
+        if candidate.startswith("//"):
+            candidate = f"https:{candidate}"
+        elif candidate.startswith("/"):
+            candidate = urljoin(AVITO_BASE_URL, candidate)
+        parsed = urlparse(candidate)
+        return candidate if parsed.scheme in {"http", "https"} and parsed.netloc else None
     if isinstance(value, list):
         for child in value:
             if result := _first_image_url(child):
@@ -90,6 +96,11 @@ def _first_image_url(value: object) -> str | None:
         "imageUrl",
         "imageLargeVipUrl",
         "imageVipUrl",
+        "image_large_urls",
+        "image_urls",
+        "wideSnippetUrls",
+        "originalUrl",
+        "original",
         "640x480",
         "432x324",
         "url",

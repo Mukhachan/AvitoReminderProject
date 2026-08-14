@@ -49,6 +49,42 @@ def test_database_search_and_notification_lifecycle(tmp_path) -> None:
     asyncio.run(scenario())
 
 
+def test_pending_item_is_enriched_with_image_before_telegram_delivery(tmp_path) -> None:
+    async def scenario() -> None:
+        database = Database(tmp_path / "pending-image.db")
+        await database.initialize()
+        search = await database.add_search(
+            chat_id=100,
+            user_id=200,
+            query="телефон",
+            city="Москва",
+            price_min=None,
+            price_max=None,
+            url="https://www.avito.ru/moskva?q=телефон",
+        )
+        without_image = AvitoItem(
+            "1234567890",
+            "Телефон",
+            25_000,
+            "https://www.avito.ru/item_1234567890",
+        )
+        with_image = AvitoItem(
+            "1234567890",
+            "Телефон",
+            25_000,
+            "https://www.avito.ru/item_1234567890",
+            image_url="https://10.img.example.test/phone.jpg",
+        )
+
+        assert await database.record_items(search.id, [without_image], notify=True) == 1
+        assert await database.record_items(search.id, [with_image], notify=True) == 0
+
+        pending = await database.pending_items(search.id, 5)
+        assert pending == [with_image]
+
+    asyncio.run(scenario())
+
+
 def test_database_migrates_existing_searches_with_default_interval(tmp_path) -> None:
     path = tmp_path / "legacy.db"
     with sqlite3.connect(path) as connection:

@@ -372,6 +372,18 @@ class Database:
                     ),
                 )
                 inserted += cursor.rowcount
+                if cursor.rowcount == 0 and item.image_url:
+                    # A pending item may have been recorded from a shell/older
+                    # parser before its lazy image became available.  Enrich only
+                    # unsent notifications without treating it as a new listing.
+                    connection.execute(
+                        """
+                        UPDATE seen_items
+                        SET image_url = COALESCE(image_url, ?)
+                        WHERE search_id = ? AND item_id = ? AND notified = 0
+                        """,
+                        (item.image_url, search_id, item.id),
+                    )
         return inserted
 
     async def pending_items(self, search_id: int, limit: int) -> list[AvitoItem]:

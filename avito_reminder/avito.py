@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from html import unescape as html_unescape
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
@@ -671,6 +672,107 @@ def _first(card: Tag, selectors: Iterable[str]) -> Tag | None:
     return None
 
 
+def _normalize_image_url(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = html_unescape(value.strip())
+    if not candidate or candidate.startswith(("data:", "blob:")):
+        return None
+    if candidate.startswith("//"):
+        candidate = f"https:{candidate}"
+    elif candidate.startswith("/"):
+        candidate = urljoin(AVITO_BASE_URL, candidate)
+    parsed = urlparse(candidate)
+    return candidate if parsed.scheme in {"http", "https"} and parsed.netloc else None
+
+
+def _srcset_image_url(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    best: tuple[float, str] | None = None
+    for index, raw_candidate in enumerate(value.split(",")):
+        parts = raw_candidate.strip().split()
+        if not parts:
+            continue
+        candidate = _normalize_image_url(parts[0])
+        if candidate is None:
+            continue
+        score = float(index)
+        if len(parts) > 1:
+            descriptor = parts[-1].lower()
+            try:
+                if descriptor.endswith("w"):
+                    score = float(descriptor[:-1])
+                elif descriptor.endswith("x"):
+                    score = float(descriptor[:-1]) * 10_000
+            except ValueError:
+                pass
+        if best is None or score > best[0]:
+            best = (score, candidate)
+    return best[1] if best else None
+
+
+def _image_url_from_card(card: Tag) -> str | None:
+    nodes = card.select('img[itemprop="image"], picture source, img')
+    for attribute in ("data-srcset", "srcset"):
+        candidates = [
+            candidate
+            for node in nodes
+            if (candidate := _srcset_image_url(node.get(attribute))) is not None
+        ]
+        if candidates:
+            return candidates[-1]
+    for attribute in (
+        "data-src",
+        "data-lazy-src",
+        "data-original",
+        "data-image-url",
+        "src",
+    ):
+        for node in nodes:
+            if candidate := _normalize_image_url(node.get(attribute)):
+                return candidate
+    return None
+
+
+def _image_url_from_json(value: object) -> str | None:
+    if candidate := _normalize_image_url(value):
+        return candidate
+    if isinstance(value, list):
+        return next(
+            (
+                candidate
+                for child in value
+                if (candidate := _image_url_from_json(child)) is not None
+            ),
+            None,
+        )
+    if not isinstance(value, dict):
+        return None
+    preferred = (
+        "imageLargeUrl",
+        "imageUrl",
+        "imageLargeVipUrl",
+        "imageVipUrl",
+        "image_large_urls",
+        "image_urls",
+        "wideSnippetUrls",
+        "url",
+        "src",
+    )
+    for key in preferred:
+        if candidate := _image_url_from_json(value.get(key)):
+            return candidate
+    return next(
+        (
+            candidate
+            for child in value.values()
+            if (candidate := _image_url_from_json(child)) is not None
+        ),
+        None,
+    )
+
+
 def _parse_cards(soup: BeautifulSoup) -> list[AvitoItem]:
     cards = soup.select('[data-marker="item"], [data-item-id][itemtype*="Product"]')
     result: dict[str, AvitoItem] = {}
@@ -709,14 +811,7 @@ def _parse_cards(soup: BeautifulSoup) -> list[AvitoItem]:
         location = _text(
             _first(card, ('[data-marker="item-address"]', '[class*="geo"]', '[class*="address"]'))
         )
-        image = _first(card, ('img[itemprop="image"]', "img"))
-        image_url = None
-        if image:
-            for attr in ("src", "data-src"):
-                raw = image.get(attr)
-                if isinstance(raw, str) and raw.startswith(("http://", "https://")):
-                    image_url = raw
-                    break
+        image_url = _image_url_from_card(card)
 
         result[item_id] = AvitoItem(
             id=item_id,
@@ -759,8 +854,7 @@ def _parse_json_ld(soup: BeautifulSoup) -> list[AvitoItem]:
                 continue
             offers = product.get("offers") if isinstance(product.get("offers"), dict) else {}
             price = _price_from_text(str(offers.get("price") or product.get("price") or ""))
-            image = product.get("image")
-            image_url = image if isinstance(image, str) else None
+            image_url = _image_url_from_json(product.get("image"))
             result[item_id] = AvitoItem(item_id, title.strip(), price, url, image_url=image_url)
     return list(result.values())
 
