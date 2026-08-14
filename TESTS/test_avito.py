@@ -14,14 +14,17 @@ from avito_reminder.avito import (
     AvitoCaptchaRequiredError,
     AvitoClient,
     AvitoError,
+    AvitoHardBlockedError,
     AvitoNetworkError,
     AvitoParseError,
     AvitoRateLimitedError,
     AvitoSessionError,
     _AvitoProxyPool,
     _AvitoProxyRotationRequired,
+    _has_target_search_query,
     _looks_like_loaded_avito_home_html,
     _playwright_proxy,
+    _proxy_route_id,
     _retry_after_seconds,
     build_search_url,
     city_slug,
@@ -103,6 +106,7 @@ class ReloadingPageStub:
 class DelayedHomePageStub(ReloadingPageStub):
     def __init__(self, blocked_html: str, ready_html: str):
         super().__init__([(200, blocked_html)])
+        self.html = blocked_html
         self.ready_html = ready_html
         self.home_ready = False
         self.wait_for_home_count = 0
@@ -113,6 +117,8 @@ class DelayedHomePageStub(ReloadingPageStub):
 
     async def wait_for_function(self, _script: str, **_kwargs) -> None:
         self.wait_for_home_count += 1
+        if self.reload_count == 0:
+            return
         self.home_ready = True
         self.html = self.ready_html
 
@@ -198,11 +204,39 @@ class CookieBrowserContextStub:
         self.added_cookies.extend(cookies)
 
 
+class CurlApiResponseStub:
+    def __init__(
+        self,
+        status_code: int,
+        *,
+        text: str = "",
+        headers: dict[str, str] | None = None,
+        payload: object | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self.text = text
+        self.headers = headers or {}
+        self._payload = payload
+
+    def json(self) -> object:
+        return self._payload
+
+
+class CurlApiSessionStub:
+    def __init__(self, response: CurlApiResponseStub) -> None:
+        self.response = response
+
+    async def get(self, *_args, **_kwargs) -> CurlApiResponseStub:
+        return self.response
+
+
 class BrowserLaunchContextStub:
     def __init__(self) -> None:
         self.init_scripts: list[str] = []
         self.extra_http_headers: dict[str, str] = {}
         self.close_callback = None
+        self.saved_storage_paths: list[str] = []
+        self.saved_indexed_db: list[bool | None] = []
 
     async def add_init_script(self, *, script: str) -> None:
         self.init_scripts.append(script)
@@ -216,6 +250,10 @@ class BrowserLaunchContextStub:
 
     async def new_page(self):
         return SimpleNamespace()
+
+    async def storage_state(self, *, path: str, indexed_db: bool | None = None):
+        self.saved_storage_paths.append(path)
+        self.saved_indexed_db.append(indexed_db)
 
 
 class BrowserLaunchStub:
@@ -290,6 +328,29 @@ def test_city_slug_supports_alias_and_transliteration() -> None:
 def test_build_search_url_rejects_inverted_price_range() -> None:
     with pytest.raises(ValueError, match="Минимальная цена"):
         build_search_url("велосипед", "Казань", 20_000, 10_000)
+
+
+def test_target_search_url_checks_path_filters_and_block_fragment() -> None:
+    target = "https://www.avito.ru/moskva?q=iphone&s=104&pmin=10000"
+
+    assert _has_target_search_query(target, target)
+    assert _has_target_search_query(
+        "https://www.avito.ru/moskva/telefony?q=iphone&pmin=10000",
+        target,
+    )
+    assert not _has_target_search_query(
+        "https://www.avito.ru/moskva/telefony/apple?q=iphone&pmin=10000",
+        target,
+    )
+    assert not _has_target_search_query(
+        "https://www.avito.ru/kazan?q=iphone&s=104&pmin=10000",
+        target,
+    )
+    assert not _has_target_search_query(
+        "https://www.avito.ru/moskva?q=iphone&s=104&pmin=20000",
+        target,
+    )
+    assert not _has_target_search_query(f"{target}#block", target)
 
 
 def test_parse_search_cards() -> None:
@@ -460,13 +521,156 @@ def test_hybrid_transport_uses_api_pages_until_result_limit(tmp_path, monkeypatc
     assert synchronized == [fake_session]
 
 
+@pytest.mark.parametrize(
+    "pagination_error",
+    [
+        AvitoBlockedError("blocked"),
+        AvitoRateLimitedError("rate limited", retry_after_seconds=900),
+        AvitoSessionError("session rejected", retry_after_seconds=900),
+    ],
+)
+def test_optional_api_page_failure_keeps_successful_first_page(
+    tmp_path, monkeypatch, pagination_error
+) -> None:
+    first = AvitoItem("1", "Первое", 100, "https://www.avito.ru/item_1000001")
+    state = AvitoPageState((first,), "context-token", {"categoryId": "1"})
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="hybrid",
+            max_results=10,
+            avito_api_max_pages=3,
+        )
+    )
+
+    async def fake_get_session():
+        return object()
+
+    async def fake_sync(_session):
+        return None
+
+    async def fake_request(**_kwargs):
+        raise pagination_error
+
+    monkeypatch.setattr(client, "_get_curl_session", fake_get_session)
+    monkeypatch.setattr(client, "_sync_browser_cookies_to_curl", fake_sync)
+    monkeypatch.setattr(client, "_request_api_page", fake_request)
+
+    items = asyncio.run(
+        client._extend_with_api_pages(
+            [first],
+            page_state=state,
+            search_url="https://www.avito.ru/moskva?q=test",
+        )
+    )
+
+    assert items == [first]
+    assert client._route_health.quarantine_remaining(client._route_health_key()) == 0
+    assert (
+        client._route_health.quarantine_remaining(
+            f"optional-api:{client._route_health_key()}"
+        )
+        > 0
+    )
+
+
+@pytest.mark.parametrize(
+    ("response", "error_type"),
+    [
+        (CurlApiResponseStub(429, headers={"Retry-After": "75"}), AvitoRateLimitedError),
+        (
+            CurlApiResponseStub(403, text="<h2>Блокировка IP</h2>"),
+            AvitoBlockedError,
+        ),
+    ],
+)
+def test_optional_api_rejection_does_not_poison_browser_or_route(
+    tmp_path,
+    monkeypatch,
+    response,
+    error_type,
+) -> None:
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="hybrid",
+            request_retries=1,
+            avito_min_request_interval_seconds=1,
+            avito_request_jitter_seconds=0,
+        )
+    )
+    session = CurlApiSessionStub(response)
+    cookie_syncs: list[object] = []
+
+    async def fake_get_session():
+        return session
+
+    async def fake_before_request():
+        return None
+
+    async def fake_sync(current_session):
+        cookie_syncs.append(current_session)
+
+    monkeypatch.setattr(client, "_get_curl_session", fake_get_session)
+    monkeypatch.setattr(client, "_before_avito_request", fake_before_request)
+    monkeypatch.setattr(client, "_sync_curl_cookies_to_browser", fake_sync)
+    state = AvitoPageState((), "context-token", {"categoryId": "1"})
+
+    with pytest.raises(error_type):
+        asyncio.run(
+            client._request_api_page(
+                page_number=2,
+                page_state=state,
+                search_url="https://www.avito.ru/moskva?q=test",
+            )
+        )
+
+    assert cookie_syncs == []
+    assert client._route_health.quarantine_remaining(client._route_health_key()) == 0
+
+
 def test_parse_detects_ip_block() -> None:
     with pytest.raises(AvitoBlockedError):
         parse_search_html("<h2>Доступ ограничен: проблема с IP</h2>")
 
 
+def test_parse_accepts_results_with_hidden_stale_block_marker() -> None:
+    html = """
+      <div hidden>Доступ ограничен: проблема с IP</div>
+      <main data-marker="catalog-serp">
+        <div data-marker="item" data-item-id="1234567890">
+          <a data-marker="item-title" href="/moskva/item_1234567890">
+            <h3>Рабочая карточка</h3>
+          </a>
+        </div>
+      </main>
+    """
+
+    assert [item.id for item in parse_search_html(html)] == ["1234567890"]
+
+
 def test_parse_accepts_confirmed_empty_result() -> None:
     assert parse_search_html("<main>По вашему запросу ничего не найдено</main>") == []
+
+
+def test_parse_rejects_nonempty_catalog_when_no_items_match_known_schema() -> None:
+    payload = {
+        "loaderData": {
+            "data": {"catalog": {"items": [{"unexpected": "new-schema"}]}}
+        }
+    }
+    html = f'<script data-mfe-state="true">{json.dumps(payload)}</script>'
+
+    with pytest.raises(AvitoParseError, match="catalog"):
+        parse_search_html(html)
+
+
+def test_parse_does_not_treat_unhydrated_empty_mfe_catalog_as_empty_result() -> None:
+    payload = {"loaderData": {"data": {"catalog": {"items": []}}}}
+    html = f'<script data-mfe-state="true">{json.dumps(payload)}</script>'
+
+    with pytest.raises(AvitoParseError):
+        parse_search_html(html)
 
 
 def test_parse_rejects_unknown_layout() -> None:
@@ -540,6 +744,214 @@ def test_proxy_mode_starts_immediately_on_random_pool_endpoint(
     assert pool.rotate() == first
 
 
+def test_single_static_proxy_does_not_claim_rotation_is_available(tmp_path) -> None:
+    proxy = "http://user:password@proxy.example.test:1000"
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_proxy_mode="proxy",
+            avito_proxy_pool=(proxy,),
+            avito_proxy_rotation_enabled=True,
+        )
+    )
+
+    assert client._proxy_rotation_available() is False
+
+
+def test_fallback_can_rotate_from_direct_to_one_static_proxy(tmp_path) -> None:
+    proxy = "http://user:password@proxy.example.test:1000"
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_proxy_mode="fallback",
+            avito_proxy_pool=(proxy,),
+            avito_proxy_rotation_enabled=True,
+            avito_proxy_rotation_delay_seconds=0,
+        )
+    )
+
+    assert client._avito_proxies.current is None
+    assert client._proxy_rotation_available() is True
+
+    asyncio.run(client._rotate_avito_proxy(1))
+
+    assert client._avito_proxies.current == proxy
+
+
+def test_proxy_start_skips_a_persistently_quarantined_route(tmp_path) -> None:
+    first = "http://user:password@first.proxy.test:1000"
+    second = "http://user:password@second.proxy.test:1000"
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_proxy_mode="proxy",
+            avito_proxy_pool=(first, second),
+            avito_proxy_rotation_enabled=True,
+        )
+    )
+    current = client._avito_proxies.current
+    assert current in {first, second}
+    client._route_health.quarantine(
+        client._route_health_key(),
+        3600,
+        "test",
+    )
+
+    asyncio.run(client._prepare_browser_start())
+
+    assert client._avito_proxies.current != current
+
+
+def test_fallback_start_skips_persistently_quarantined_direct_route(tmp_path) -> None:
+    proxy = "http://user:password@proxy.example.test:1000"
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_proxy_mode="fallback",
+            avito_proxy_pool=(proxy,),
+            avito_proxy_rotation_enabled=True,
+        )
+    )
+    client._route_health.quarantine(
+        client._route_health_key(None, use_current_route=False),
+        3600,
+        "test",
+    )
+
+    asyncio.run(client._prepare_browser_start())
+
+    assert client._avito_proxies.current == proxy
+
+
+def test_fallback_restart_uses_persisted_public_ip_quarantine(tmp_path) -> None:
+    proxy = "http://user:password@proxy.example.test:1000"
+    cfg = settings(
+        tmp_path / "test.db",
+        avito_proxy_mode="fallback",
+        avito_proxy_pool=(proxy,),
+        avito_proxy_rotation_enabled=True,
+    )
+    first = AvitoClient(cfg)
+    direct_route_id = _proxy_route_id(None)
+    first._route_health.associate_public_ip(direct_route_id, "203.0.113.10")
+    first._route_health.quarantine(
+        first._route_health_key(None, use_current_route=False),
+        3600,
+        "test",
+    )
+
+    restarted = AvitoClient(cfg)
+    asyncio.run(restarted._prepare_browser_start())
+
+    assert restarted._route_health_key(None, use_current_route=False) == "ip:203.0.113.10"
+    assert restarted._avito_proxies.current == proxy
+
+
+def test_proxy_start_uses_shortest_quarantine_when_all_routes_are_blocked(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    first = "http://user:password@first.proxy.test:1000"
+    second = "http://user:password@second.proxy.test:1000"
+    monkeypatch.setattr("avito_reminder.avito.random.randrange", lambda _size: 0)
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_proxy_mode="proxy",
+            avito_proxy_pool=(first, second),
+            avito_proxy_rotation_enabled=True,
+        )
+    )
+    client._route_health.quarantine(
+        client._route_health_key(first, use_current_route=False),
+        21_600,
+        "test-long",
+    )
+    client._route_health.quarantine(
+        client._route_health_key(second, use_current_route=False),
+        600,
+        "test-short",
+    )
+
+    with pytest.raises(AvitoRateLimitedError) as caught:
+        asyncio.run(client._prepare_browser_start())
+
+    assert caught.value.retry_after_seconds is not None
+    assert 590 <= caught.value.retry_after_seconds <= 600
+
+
+def test_runtime_proxy_rotation_skips_quarantined_endpoint(tmp_path, monkeypatch) -> None:
+    first = "http://user:password@first.proxy.test:1000"
+    second = "http://user:password@second.proxy.test:1000"
+    third = "http://user:password@third.proxy.test:1000"
+    monkeypatch.setattr("avito_reminder.avito.random.randrange", lambda _size: 0)
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_proxy_mode="proxy",
+            avito_proxy_pool=(first, second, third),
+            avito_proxy_rotation_enabled=True,
+            avito_proxy_rotation_delay_seconds=0,
+        )
+    )
+    client._route_health.quarantine(
+        client._route_health_key(second, use_current_route=False),
+        3600,
+        "test",
+    )
+
+    asyncio.run(client._rotate_avito_proxy(1))
+
+    assert client._avito_proxies.current == third
+
+
+def test_browser_skips_endpoint_that_resolves_to_quarantined_public_ip(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    first = "http://user:password@first.proxy.test:1000"
+    second = "http://user:password@second.proxy.test:1000"
+    monkeypatch.setattr("avito_reminder.avito.random.randrange", lambda _size: 0)
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+            avito_proxy_mode="proxy",
+            avito_proxy_pool=(first, second),
+            avito_proxy_rotation_enabled=True,
+            avito_proxy_max_rotations=1,
+            avito_proxy_rotation_delay_seconds=0,
+        )
+    )
+    client._route_health.quarantine("ip:203.0.113.10", 3600, "test")
+    started_routes: list[str | None] = []
+
+    async def fake_start_browser() -> None:
+        current = client._avito_proxies.current
+        started_routes.append(current)
+        route_id = _proxy_route_id(current)
+        public_ip = "203.0.113.10" if current == first else "203.0.113.11"
+        client._route_public_ips[route_id] = public_ip
+        client._route_health.associate_public_ip(route_id, public_ip)
+
+    async def fake_start_session() -> None:
+        return None
+
+    async def fake_search(*_args, **_kwargs):
+        assert client._avito_proxies.current == second
+        return []
+
+    monkeypatch.setattr(client, "_start_browser", fake_start_browser)
+    monkeypatch.setattr(client, "_start_browser_session", fake_start_session)
+    monkeypatch.setattr(client, "_search_browser_with_current_proxy", fake_search)
+
+    result = asyncio.run(client._search_browser("https://www.avito.ru/moskva?q=test"))
+
+    assert result == []
+    assert started_routes == [first, second]
+    assert client._avito_proxies.current == second
+
+
 def test_playwright_proxy_keeps_credentials_out_of_server_url() -> None:
     assert _playwright_proxy(
         "http://user%40account:password%3Avalue@proxy.example.test:1000"
@@ -579,6 +991,7 @@ def test_browser_launch_uses_one_coherent_identity(tmp_path, monkeypatch) -> Non
             tmp_path / "test.db",
             avito_transport="hybrid",
             avito_log_public_ip=False,
+            avito_browser_stealth=True,
         )
     )
     client._playwright = SimpleNamespace(chromium=launcher)  # type: ignore[assignment]
@@ -598,6 +1011,137 @@ def test_browser_launch_uses_one_coherent_identity(tmp_path, monkeypatch) -> Non
     assert "--disable-blink-features=AutomationControlled" in launcher.options["args"]
     assert context.init_scripts
     assert "Navigator.prototype, 'webdriver'" in context.init_scripts[0]
+
+
+def test_browser_session_restores_storage_only_for_same_route_and_identity(
+    tmp_path, monkeypatch
+) -> None:
+    context = BrowserLaunchContextStub()
+    launcher = ChromiumLauncherStub(context)
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+            avito_browser_stealth=False,
+            avito_new_user_per_session=False,
+            avito_log_public_ip=False,
+        )
+    )
+    client._playwright = SimpleNamespace(chromium=launcher)  # type: ignore[assignment]
+    monkeypatch.setattr("avito_reminder.avito.resolve_chromium_executable", lambda _settings: None)
+    expected = client._browser_storage_state_path()
+    expected.parent.mkdir(parents=True, exist_ok=True)
+    expected.write_text('{"cookies": [], "origins": []}', encoding="utf-8")
+
+    asyncio.run(client._start_browser())
+    asyncio.run(client._start_browser_session())
+
+    assert launcher.browser.context_options["storage_state"] == str(expected)
+    assert "user_agent" not in launcher.browser.context_options
+    assert context.extra_http_headers == {}
+    assert context.init_scripts == []
+
+
+def test_browser_session_discards_invalid_saved_storage_and_recovers(
+    tmp_path, monkeypatch
+) -> None:
+    context = BrowserLaunchContextStub()
+    launcher = ChromiumLauncherStub(context)
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+            avito_browser_stealth=False,
+            avito_new_user_per_session=False,
+            avito_log_public_ip=False,
+        )
+    )
+    client._playwright = SimpleNamespace(chromium=launcher)  # type: ignore[assignment]
+    monkeypatch.setattr("avito_reminder.avito.resolve_chromium_executable", lambda _settings: None)
+    stored_state = client._browser_storage_state_path()
+    stored_state.parent.mkdir(parents=True, exist_ok=True)
+    stored_state.write_text("{truncated", encoding="utf-8")
+
+    original_new_context = launcher.browser.new_context
+    context_options: list[dict[str, object]] = []
+
+    async def reject_stored_state_once(**options):
+        context_options.append(options)
+        if "storage_state" in options:
+            raise PlaywrightError("invalid storage state")
+        return await original_new_context(**options)
+
+    monkeypatch.setattr(launcher.browser, "new_context", reject_stored_state_once)
+
+    asyncio.run(client._start_browser())
+    asyncio.run(client._start_browser_session())
+
+    assert len(context_options) == 2
+    assert context_options[0]["storage_state"] == str(stored_state)
+    assert "storage_state" not in context_options[1]
+    assert not stored_state.exists()
+    assert client._browser_context is context
+
+
+def test_browser_session_preserves_saved_storage_when_clean_context_also_fails(
+    tmp_path, monkeypatch
+) -> None:
+    context = BrowserLaunchContextStub()
+    launcher = ChromiumLauncherStub(context)
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+            avito_browser_stealth=False,
+            avito_new_user_per_session=False,
+            avito_log_public_ip=False,
+        )
+    )
+    client._playwright = SimpleNamespace(chromium=launcher)  # type: ignore[assignment]
+    monkeypatch.setattr("avito_reminder.avito.resolve_chromium_executable", lambda _settings: None)
+    stored_state = client._browser_storage_state_path()
+    stored_state.parent.mkdir(parents=True, exist_ok=True)
+    stored_state.write_text('{"cookies": [], "origins": []}', encoding="utf-8")
+
+    async def reject_every_context(**_options):
+        raise PlaywrightError("browser unavailable")
+
+    monkeypatch.setattr(launcher.browser, "new_context", reject_every_context)
+
+    asyncio.run(client._start_browser())
+    with pytest.raises(PlaywrightError, match="browser unavailable"):
+        asyncio.run(client._start_browser_session())
+
+    assert stored_state.is_file()
+
+
+def test_browser_storage_state_includes_indexed_db(tmp_path) -> None:
+    context = BrowserLaunchContextStub()
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+            avito_new_user_per_session=False,
+        )
+    )
+    client._browser_context = context  # type: ignore[assignment]
+
+    asyncio.run(client._save_browser_storage_state())
+
+    assert context.saved_indexed_db == [True]
+
+
+def test_block_rotation_discards_saved_storage_state(tmp_path) -> None:
+    client = AvitoClient(settings(tmp_path / "test.db", avito_transport="browser"))
+    previous = client._ensure_browser_identity()
+    storage_state = client._browser_storage_state_path(identity_id=previous.identity_id)
+    storage_state.parent.mkdir(parents=True, exist_ok=True)
+    storage_state.write_text('{"cookies": [], "origins": []}', encoding="utf-8")
+
+    asyncio.run(client._replace_blocked_browser_identity("test block"))
+
+    assert not storage_state.exists()
+    assert client._ensure_browser_identity().identity_id != previous.identity_id
 
 
 def test_next_browser_session_gets_new_process_identity_and_proxy(
@@ -648,6 +1192,39 @@ def test_next_browser_session_gets_new_process_identity_and_proxy(
     assert second_route != first_route
 
 
+@pytest.mark.parametrize(
+    ("start_with_proxy", "expected_proxy"),
+    [
+        (False, "http://only.proxy.test:1000"),
+        (True, None),
+    ],
+)
+def test_rotate_on_browser_start_switches_between_fallback_routes(
+    tmp_path, start_with_proxy: bool, expected_proxy: str | None
+) -> None:
+    proxy = "http://only.proxy.test:1000"
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+            avito_proxy_mode="fallback",
+            avito_proxy_pool=(proxy,),
+            avito_proxy_rotation_enabled=True,
+            avito_proxy_rotate_on_browser_start=True,
+            avito_proxy_rotation_delay_seconds=0,
+            avito_identity_rotate_on_browser_start=False,
+            avito_log_public_ip=False,
+        )
+    )
+    if start_with_proxy:
+        assert client._avito_proxies.rotate() == proxy
+    client._browser_launches = 1
+
+    asyncio.run(client._prepare_browser_start())
+
+    assert client._avito_proxies.current == expected_proxy
+
+
 def test_new_user_session_rotation_can_be_disabled(tmp_path, monkeypatch) -> None:
     client = AvitoClient(
         settings(
@@ -666,7 +1243,7 @@ def test_new_user_session_rotation_can_be_disabled(tmp_path, monkeypatch) -> Non
     asyncio.run(client._prepare_new_user_session())
 
 
-def test_client_ignores_saved_identity_json(tmp_path) -> None:
+def test_client_restores_saved_identity_json(tmp_path) -> None:
     client_settings = settings(tmp_path / "test.db", avito_transport="browser")
     saved = load_browser_identity(
         profile_path=client_settings.avito_browser_profile_path,
@@ -678,7 +1255,7 @@ def test_client_ignores_saved_identity_json(tmp_path) -> None:
 
     current = AvitoClient(client_settings)._ensure_browser_identity()
 
-    assert current.identity_id != saved.identity_id
+    assert current == saved
 
 
 @pytest.mark.filterwarnings("ignore::curl_cffi.utils.CurlCffiWarning")
@@ -892,7 +1469,10 @@ def test_captcha_page_restarts_without_waiting(tmp_path, monkeypatch) -> None:
             tmp_path / "test.db",
             avito_transport="hybrid",
             avito_proxy_mode="proxy",
-            avito_proxy_pool=("http://user:password@proxy.example.test:1000",),
+            avito_proxy_pool=(
+                "http://user:password@proxy.example.test:1000",
+                "http://user:password@proxy2.example.test:1000",
+            ),
             avito_proxy_rotation_enabled=True,
             avito_page_reload_delay_seconds=90,
         )
@@ -913,7 +1493,7 @@ def test_captcha_page_restarts_without_waiting(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(client, "_save_browser_diagnostic", fake_diagnostic)
 
     async def scenario() -> None:
-        with pytest.raises(_AvitoProxyRotationRequired):
+        with pytest.raises(_AvitoProxyRotationRequired) as caught:
             await client._wait_then_reload_avito_page(
                 page,  # type: ignore[arg-type]
                 status=200,
@@ -921,19 +1501,64 @@ def test_captcha_page_restarts_without_waiting(tmp_path, monkeypatch) -> None:
                 page_name="главная страница",
                 on_blocked=on_blocked,
             )
+        assert isinstance(caught.value.notification_error, AvitoCaptchaRequiredError)
 
     asyncio.run(scenario())
 
     assert page.reload_count == 0
     assert delays == []
-    assert len(notifications) == 1
-    assert isinstance(notifications[0], AvitoCaptchaRequiredError)
+    assert notifications == []
+
+
+def test_hard_block_without_ip_rotation_replaces_session_and_starts_cooldown(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    page = ReloadingPageStub([])
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+            avito_proxy_mode="direct",
+            avito_proxy_pool=(),
+            avito_proxy_rotation_enabled=False,
+            avito_cooldown_seconds=7200,
+        )
+    )
+    replacements: list[str] = []
+
+    async def fake_replace(reason: str) -> None:
+        replacements.append(reason)
+
+    async def fake_diagnostic(*_args, **_kwargs):
+        return tmp_path / "blocked.png"
+
+    monkeypatch.setattr(client, "_replace_blocked_browser_identity", fake_replace)
+    monkeypatch.setattr(client, "_save_browser_diagnostic", fake_diagnostic)
+
+    with pytest.raises(AvitoBlockedError) as caught:
+        asyncio.run(
+            client._wait_then_reload_avito_page(
+                page,  # type: ignore[arg-type]
+                status=429,
+                html="<h2>Блокировка IP</h2>",
+                page_name="главная страница",
+            )
+        )
+
+    assert replacements == ["жёсткая блокировка без доступной смены IP"]
+    assert caught.value.retry_after_seconds == 7200
+    assert client._cooldown_until is not None
 
 
 def test_transient_ip_problem_waits_once_before_proxy_rotation(
     tmp_path, monkeypatch
 ) -> None:
-    blocked_html = "<h2>Доступ ограничен: проблема с IP</h2>"
+    blocked_html = """
+      <h2>Доступ ограничен: проблема с IP</h2>
+      <p>Продолжить для решения капчи</p>
+      <button>Продолжить</button>
+    """
     page = ReloadingPageStub([(200, blocked_html)])
     page.url = "https://www.avito.ru/#block"
     client = AvitoClient(
@@ -941,7 +1566,10 @@ def test_transient_ip_problem_waits_once_before_proxy_rotation(
             tmp_path / "test.db",
             avito_transport="hybrid",
             avito_proxy_mode="proxy",
-            avito_proxy_pool=("http://user:password@proxy.example.test:1000",),
+            avito_proxy_pool=(
+                "http://user:password@proxy.example.test:1000",
+                "http://user:password@proxy2.example.test:1000",
+            ),
             avito_proxy_rotation_enabled=True,
             avito_proxy_rotate_after_reloads=1,
             avito_page_reload_delay_seconds=90,
@@ -1009,7 +1637,10 @@ def test_loaded_home_with_block_fragment_does_not_wait_or_rotate(
             tmp_path / "test.db",
             avito_transport="hybrid",
             avito_proxy_mode="proxy",
-            avito_proxy_pool=("http://user:password@proxy.example.test:1000",),
+            avito_proxy_pool=(
+                "http://user:password@proxy.example.test:1000",
+                "http://user:password@proxy2.example.test:1000",
+            ),
             avito_proxy_rotation_enabled=True,
             avito_page_reload_delay_seconds=90,
         )
@@ -1075,7 +1706,7 @@ def test_parser_waits_for_home_to_finish_rendering_after_ip_problem(
 
     assert result == (200, ready_html, True)
     assert page.reload_count == 1
-    assert page.wait_for_home_count == 1
+    assert page.wait_for_home_count == 2
     assert delays == [90]
 
 
@@ -1093,7 +1724,11 @@ def test_block_page_is_not_mistaken_for_loaded_home() -> None:
 def test_browser_continues_without_wait_or_reload_when_page_opened_normally(
     tmp_path, monkeypatch
 ) -> None:
-    ready_html = "<html><title>Avito</title><main>Главная</main></html>"
+    ready_html = """
+        <input placeholder="Поиск по объявлениям">
+        <button>Найти</button>
+        <a>Авто</a><a>Недвижимость</a><a>Услуги</a><a>Работа</a>
+    """
     page = ReloadingPageStub([])
     client = AvitoClient(
         settings(
@@ -1177,7 +1812,10 @@ def test_hard_ip_block_requests_proxy_rotation_without_waiting(tmp_path, monkeyp
             tmp_path / "test.db",
             avito_transport="hybrid",
             avito_proxy_mode="fallback",
-            avito_proxy_pool=("http://user:password@proxy.example.test:1000",),
+            avito_proxy_pool=(
+                "http://user:password@proxy.example.test:1000",
+                "http://user:password@proxy2.example.test:1000",
+            ),
             avito_proxy_rotation_enabled=True,
             avito_proxy_rotate_after_reloads=1,
             avito_page_reload_delay_seconds=90,
@@ -1211,14 +1849,75 @@ def test_hard_ip_block_requests_proxy_rotation_without_waiting(tmp_path, monkeyp
                 on_blocked=on_blocked,
             )
         assert caught.value.retry_after_seconds is None
+        assert isinstance(caught.value.notification_error, AvitoHardBlockedError)
         assert client._cooldown_until is None
 
     asyncio.run(scenario())
 
     assert page.reload_count == 0
     assert delays == []
-    assert len(notifications) == 1
-    assert notifications[0].retry_after_seconds is None
+    assert notifications == []
+
+
+def test_immediate_block_rotates_before_running_notification_callback(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    first = "http://user:password@first.proxy.test:1000"
+    second = "http://user:password@second.proxy.test:1000"
+    monkeypatch.setattr("avito_reminder.avito.random.randrange", lambda _size: 0)
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+            avito_proxy_mode="proxy",
+            avito_proxy_pool=(first, second),
+            avito_proxy_rotation_enabled=True,
+            avito_proxy_max_rotations=1,
+        )
+    )
+    events: list[str] = []
+    attempts = 0
+
+    async def fake_start_browser() -> None:
+        return None
+
+    async def fake_start_session() -> None:
+        return None
+
+    async def fake_search(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise _AvitoProxyRotationRequired(
+                "blocked",
+                notification_error=AvitoCaptchaRequiredError("captcha"),
+            )
+        return []
+
+    async def fake_rotate(_number: int, *, replace_identity: bool = True) -> None:
+        assert replace_identity is True
+        events.append("rotated")
+
+    async def on_blocked(_exc: AvitoBlockedError) -> None:
+        events.append("notification-started")
+        await asyncio.sleep(0)
+        events.append("notification-finished")
+
+    monkeypatch.setattr(client, "_start_browser", fake_start_browser)
+    monkeypatch.setattr(client, "_start_browser_session", fake_start_session)
+    monkeypatch.setattr(client, "_search_browser_with_current_proxy", fake_search)
+    monkeypatch.setattr(client, "_rotate_avito_proxy", fake_rotate)
+
+    result = asyncio.run(
+        client._search_browser(
+            "https://www.avito.ru/moskva?q=test",
+            on_blocked=on_blocked,
+        )
+    )
+
+    assert result == []
+    assert events == ["rotated", "notification-started", "notification-finished"]
 
 
 def test_proxy_rotation_recreates_network_on_next_endpoint(tmp_path, monkeypatch) -> None:
@@ -1251,6 +1950,101 @@ def test_proxy_rotation_recreates_network_on_next_endpoint(tmp_path, monkeypatch
     assert events == ["closed", "change-url"]
     assert client._avito_proxies.current == second
     assert client.last_route == "chromium+curl-proxy"
+    assert client._last_avito_request_at is None
+
+
+def test_exhausted_proxy_network_failure_uses_next_route_without_new_identity(
+    tmp_path, monkeypatch
+) -> None:
+    first = "http://user:password@first.proxy.test:1000"
+    second = "http://user:password@second.proxy.test:1000"
+    monkeypatch.setattr("avito_reminder.avito.random.randrange", lambda _size: 0)
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_transport="browser",
+            avito_proxy_mode="proxy",
+            avito_proxy_pool=(first, second),
+            avito_proxy_rotation_enabled=True,
+            avito_proxy_rotation_delay_seconds=0,
+            avito_proxy_max_rotations=1,
+        )
+    )
+    identity = client._ensure_browser_identity()
+    routes: list[str | None] = []
+
+    async def fake_start_browser() -> None:
+        return None
+
+    async def fake_start_session() -> None:
+        return None
+
+    async def fake_search(*_args, **_kwargs):
+        current = client._avito_proxies.current
+        routes.append(current)
+        if current == first:
+            raise AvitoNetworkError("proxy returned HTTP 502")
+        return []
+
+    monkeypatch.setattr(client, "_start_browser", fake_start_browser)
+    monkeypatch.setattr(client, "_start_browser_session", fake_start_session)
+    monkeypatch.setattr(client, "_search_browser_with_current_proxy", fake_search)
+
+    result = asyncio.run(client._search_browser("https://www.avito.ru/moskva?q=test"))
+
+    assert result == []
+    assert routes == [first, second]
+    assert client._avito_proxies.current == second
+    assert client._ensure_browser_identity().identity_id == identity.identity_id
+    assert (
+        client._route_health.quarantine_remaining(
+            client._route_health_key(first, use_current_route=False)
+        )
+        > 0
+    )
+
+
+def test_proxy_change_url_rejects_redirect_without_following_it(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    requests: list[tuple[str, bool]] = []
+
+    class Response:
+        status = 302
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Session:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def get(self, url: str, *, allow_redirects: bool):
+            requests.append((url, allow_redirects))
+            return Response()
+
+    client = AvitoClient(
+        settings(
+            tmp_path / "test.db",
+            avito_proxy_change_url="https://rotate.example.test/secret",
+        )
+    )
+    monkeypatch.setattr("avito_reminder.avito.aiohttp.ClientSession", Session)
+
+    with pytest.raises(AvitoNetworkError, match="HTTP 302"):
+        asyncio.run(client._call_proxy_change_url())
+
+    assert requests == [("https://rotate.example.test/secret", False)]
 
 
 def test_proxy_timeout_on_about_blank_rotates_without_screenshot(tmp_path) -> None:
@@ -1260,14 +2054,17 @@ def test_proxy_timeout_on_about_blank_rotates_without_screenshot(tmp_path) -> No
             tmp_path / "test.db",
             avito_transport="hybrid",
             avito_proxy_mode="proxy",
-            avito_proxy_pool=("http://user:password@proxy.example.test:1000",),
+            avito_proxy_pool=(
+                "http://user:password@proxy.example.test:1000",
+                "http://user:password@proxy2.example.test:1000",
+            ),
             avito_proxy_rotation_enabled=True,
             avito_browser_headless=False,
         )
     )
     client._browser_context = SimpleNamespace(pages=[page])  # type: ignore[assignment]
 
-    with pytest.raises(_AvitoProxyRotationRequired, match="about:blank"):
+    with pytest.raises(_AvitoProxyRotationRequired, match="about:blank") as raised:
         asyncio.run(
             client._search_browser_with_current_proxy(
                 "https://www.avito.ru/moskva?q=test"
@@ -1277,3 +2074,5 @@ def test_proxy_timeout_on_about_blank_rotates_without_screenshot(tmp_path) -> No
     assert page.closed is False
     assert page.screenshot_calls == 0
     assert page.status_content_calls == 1
+    assert raised.value.replace_identity is False
+    assert client._route_health.quarantine_remaining(client._route_health_key()) > 0

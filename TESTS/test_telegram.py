@@ -30,7 +30,7 @@ def test_parse_price_for_wizard(value, expected) -> None:
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        ("15 минут", 900),
+        ("30 минут", 1800),
         ("45 минут", 2700),
         ("2 часа", 7200),
         ("24 часа", 86_400),
@@ -41,8 +41,13 @@ def test_parse_interval_for_wizard(value, expected) -> None:
 
 
 def test_parse_interval_rejects_too_frequent_checks() -> None:
-    with pytest.raises(ValueError, match="15 минут"):
-        _parse_interval("5 минут")
+    with pytest.raises(ValueError, match="30 минут"):
+        _parse_interval("15 минут")
+
+
+def test_parse_interval_honours_a_stricter_configured_minimum() -> None:
+    with pytest.raises(ValueError, match="1 час"):
+        _parse_interval("30 минут", minimum_seconds=3600)
 
 
 def test_search_card_contains_interval_and_actions() -> None:

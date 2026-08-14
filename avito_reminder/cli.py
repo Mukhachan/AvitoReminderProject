@@ -20,6 +20,7 @@ from .avito import (
 from .browser_identity import resolve_http_impersonate
 from .config import load_settings
 from .database import Database
+from .runtime_lock import AlreadyRunningError, RuntimeLock
 from .telegram_transport import create_telegram_session
 
 
@@ -59,78 +60,95 @@ async def _telegram_check(settings) -> int:
 
 
 async def doctor(live: bool, telegram: bool, query: str, city: str) -> int:
-    settings = load_settings(require_bot_token=telegram)
+    try:
+        settings = load_settings(require_bot_token=telegram)
+    except (RuntimeError, ValueError) as exc:
+        print(f"Configuration: FAIL - {exc}")
+        return 4
     print("Python:", sys.version.split()[0])
     print("Telegram token:", "configured" if settings.bot_token else "missing")
     print("Database:", settings.database_path)
-    database = Database(settings.database_path)
-    await database.initialize()
-    print("Database check: OK")
-    status = 0
-    if telegram:
-        status = max(status, await _telegram_check(settings))
-    else:
-        print("Telegram live check: skipped (use --telegram)")
-    if not live:
-        print("Avito live check: skipped (use --live)")
-        return status
+    runtime_lock = RuntimeLock(settings.database_path)
+    try:
+        runtime_lock.acquire()
+    except AlreadyRunningError as exc:
+        print(f"Database check: SKIPPED - {exc}")
+        return 4
+    database = Database(
+        settings.database_path,
+        schedule_spread_seconds=settings.search_schedule_spread_seconds,
+        minimum_interval_seconds=settings.search_interval_seconds,
+    )
+    try:
+        await database.initialize()
+        print("Database check: OK")
+        status = 0
+        if telegram:
+            status = max(status, await _telegram_check(settings))
+        else:
+            print("Telegram live check: skipped (use --telegram)")
+        if not live:
+            print("Avito live check: skipped (use --live)")
+            return status
 
-    print("Avito transport:", settings.avito_transport)
-    print("Avito proxy mode:", settings.avito_proxy_mode)
-    print("Avito proxy pool:", len(settings.avito_proxy_pool), "configured")
-    print(
-        "Avito public IP logging:",
-        "enabled" if settings.avito_log_public_ip else "disabled",
-    )
-    print(
-        "Avito IP rotation:",
-        "enabled" if settings.avito_proxy_rotation_enabled else "disabled",
-    )
-    if settings.avito_transport in {"browser", "hybrid"}:
+        print("Avito transport:", settings.avito_transport)
+        print("Avito proxy mode:", settings.avito_proxy_mode)
+        print("Avito proxy pool:", len(settings.avito_proxy_pool), "configured")
         print(
-            "Avito Chromium:",
-            resolve_chromium_executable(settings) or "Playwright bundled Chromium",
+            "Avito public IP logging:",
+            "enabled" if settings.avito_log_public_ip else "disabled",
         )
         print(
-            "Avito browser stealth:",
-            "enabled" if settings.avito_browser_stealth else "disabled",
+            "Avito IP rotation:",
+            "enabled" if settings.avito_proxy_rotation_enabled else "disabled",
         )
-        print(
-            "Avito identity rotation on block:",
-            "enabled" if settings.avito_identity_rotate_on_block else "disabled",
-        )
-        print(
-            "Avito new user per browser session:",
-            "enabled" if settings.avito_new_user_per_session else "disabled",
-        )
-        print(
-            "Avito new identity on Chromium start:",
-            "enabled"
-            if settings.avito_identity_rotate_on_browser_start
-            else "disabled",
-        )
-        print(
-            "Avito proxy rotation on Chromium restart:",
-            "enabled" if settings.avito_proxy_rotate_on_browser_start else "disabled",
-        )
-    if settings.avito_transport == "hybrid":
-        print(
-            "Avito HTTP fingerprint:",
-            resolve_http_impersonate(
-                settings.user_agent,
-                settings.avito_http_impersonate,
-            ),
-        )
-        print("Avito API page limit:", settings.avito_api_max_pages)
-    url = build_search_url(query, city)
-    async with AvitoClient(settings) as client:
-        try:
-            items = await client.search(url)
-        except AvitoError as exc:
-            if client.last_route:
-                print("Avito last route:", client.last_route)
-            print("Avito live check: FAIL -", exc)
-            return max(status, 2)
+        if settings.avito_transport in {"browser", "hybrid"}:
+            print(
+                "Avito Chromium:",
+                resolve_chromium_executable(settings) or "Playwright bundled Chromium",
+            )
+            print(
+                "Avito browser stealth:",
+                "enabled" if settings.avito_browser_stealth else "disabled",
+            )
+            print(
+                "Avito identity rotation on block:",
+                "enabled" if settings.avito_identity_rotate_on_block else "disabled",
+            )
+            print(
+                "Avito new user per browser session:",
+                "enabled" if settings.avito_new_user_per_session else "disabled",
+            )
+            print(
+                "Avito new identity on Chromium start:",
+                "enabled"
+                if settings.avito_identity_rotate_on_browser_start
+                else "disabled",
+            )
+            print(
+                "Avito proxy rotation on Chromium restart:",
+                "enabled" if settings.avito_proxy_rotate_on_browser_start else "disabled",
+            )
+        if settings.avito_transport == "hybrid":
+            print(
+                "Avito HTTP fingerprint:",
+                resolve_http_impersonate(
+                    settings.user_agent,
+                    settings.avito_http_impersonate,
+                ),
+            )
+            print("Avito API page limit:", settings.avito_api_max_pages)
+        url = build_search_url(query, city)
+        async with AvitoClient(settings) as client:
+            try:
+                items = await client.search(url)
+            except AvitoError as exc:
+                if client.last_route:
+                    print("Avito last route:", client.last_route)
+                print("Avito live check: FAIL -", exc)
+                return max(status, 2)
+    finally:
+        runtime_lock.release()
     print("Avito route:", client.last_route)
     print(f"Avito live check: OK, parsed {len(items)} items")
     for item in items[:3]:
@@ -145,27 +163,36 @@ async def browser_setup(query: str, city: str) -> int:
         avito_browser_headless=False,
     )
     url = build_search_url(query, city)
+    runtime_lock = RuntimeLock(settings.database_path)
+    try:
+        runtime_lock.acquire()
+    except AlreadyRunningError as exc:
+        print(f"Ручная проверка Avito: SKIPPED - {exc}")
+        return 4
     print("Открываю Avito в Chromium напрямую, без TELEGRAM_PROXY...")
-    async with AvitoClient(settings) as client:
-        page, home_status, search_status = await client.open_manual_verification_page(url)
-        try:
-            print("Главная страница Avito, HTTP:", home_status)
-            print("Поисковая страница Avito, HTTP:", search_status)
-            print("В открывшемся Chromium нажмите «Продолжить» и завершите проверку Avito.")
-            await asyncio.to_thread(
-                input, "Когда выдача откроется, вернитесь сюда и нажмите Enter: "
-            )
-            html = await page.content()
+    try:
+        async with AvitoClient(settings) as client:
+            page, home_status, search_status = await client.open_manual_verification_page(url)
             try:
-                items = parse_search_html(html)[: settings.max_results]
-            except AvitoError as exc:
-                print("Проверка профиля: FAIL -", exc)
-                return 2
-            print(f"Проверка сессии: OK, распознано объявлений: {len(items)}")
-            print("Состояние временной браузерной сессии будет удалено при закрытии.")
-            return 0
-        finally:
-            await page.close()
+                print("Главная страница Avito, HTTP:", home_status)
+                print("Поисковая страница Avito, HTTP:", search_status)
+                print("В открывшемся Chromium нажмите «Продолжить» и завершите проверку Avito.")
+                await asyncio.to_thread(
+                    input, "Когда выдача откроется, вернитесь сюда и нажмите Enter: "
+                )
+                html = await page.content()
+                try:
+                    items = parse_search_html(html)[: settings.max_results]
+                except AvitoError as exc:
+                    print("Проверка профиля: FAIL -", exc)
+                    return 2
+                print(f"Проверка сессии: OK, распознано объявлений: {len(items)}")
+                print("Состояние временной браузерной сессии будет удалено при закрытии.")
+                return 0
+            finally:
+                await page.close()
+    finally:
+        runtime_lock.release()
 
 
 def main() -> None:

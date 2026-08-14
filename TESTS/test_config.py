@@ -2,8 +2,26 @@ import asyncio
 
 import pytest
 
-from avito_reminder.config import load_settings
+from avito_reminder.config import _env_duplicates, load_settings
 from avito_reminder.telegram_transport import create_telegram_session
+
+
+def test_production_defaults_use_browser_without_stealth(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("avito_reminder.config.load_dotenv", lambda: None)
+    monkeypatch.delenv("AVITO_TRANSPORT", raising=False)
+    monkeypatch.delenv("AVITO_BROWSER_STEALTH", raising=False)
+    monkeypatch.delenv("AVITO_INITIAL_API_MAX_PAGES", raising=False)
+    monkeypatch.delenv("AVITO_PROXY_POOL_FILE", raising=False)
+    monkeypatch.delenv("AVITO_PROXY", raising=False)
+    monkeypatch.delenv("AVITO_HTTP_PROXY", raising=False)
+    monkeypatch.delenv("AVITO_PROXY_MODE", raising=False)
+
+    settings = load_settings(require_bot_token=False)
+
+    assert settings.avito_transport == "browser"
+    assert settings.avito_browser_stealth is False
+    assert settings.avito_initial_api_max_pages == 1
 
 
 def test_settings_split_telegram_and_avito_proxies(monkeypatch) -> None:
@@ -101,7 +119,8 @@ def test_settings_load_avito_proxy_pool_and_rotation(monkeypatch, tmp_path) -> N
     monkeypatch.setenv("AVITO_PROXY_ROTATE_AFTER_RELOADS", "2")
     monkeypatch.setenv("AVITO_PROXY_ROTATION_DELAY_SECONDS", "7")
     monkeypatch.setenv("AVITO_PROXY_MAX_ROTATIONS", "4")
-    monkeypatch.setenv("AVITO_LOG_PUBLIC_IP", "false")
+    monkeypatch.setenv("AVITO_PROXY_NETWORK_FAILURE_COOLDOWN_SECONDS", "321")
+    monkeypatch.setenv("AVITO_LOG_PUBLIC_IP", "true")
 
     settings = load_settings()
 
@@ -114,7 +133,40 @@ def test_settings_load_avito_proxy_pool_and_rotation(monkeypatch, tmp_path) -> N
     assert settings.avito_proxy_rotate_after_reloads == 2
     assert settings.avito_proxy_rotation_delay_seconds == 7
     assert settings.avito_proxy_max_rotations == 4
-    assert settings.avito_log_public_ip is False
+    assert settings.avito_proxy_network_failure_cooldown_seconds == 321
+    assert settings.avito_log_public_ip is True
+
+
+def test_settings_reject_remote_plaintext_proxy_change_url(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
+    monkeypatch.setenv("AVITO_PROXY_POOL_FILE", "")
+    monkeypatch.setenv("AVITO_PROXY_MODE", "direct")
+    monkeypatch.setenv("AVITO_PROXY_CHANGE_URL", "http://rotate.example.test/secret")
+
+    with pytest.raises(ValueError, match="HTTPS"):
+        load_settings()
+
+
+def test_settings_allow_plaintext_proxy_change_url_on_loopback(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
+    monkeypatch.setenv("AVITO_PROXY_POOL_FILE", "")
+    monkeypatch.setenv("AVITO_PROXY_MODE", "direct")
+    monkeypatch.setenv("AVITO_PROXY_CHANGE_URL", "http://127.0.0.1:8080/change")
+
+    loaded = load_settings()
+
+    assert loaded.avito_proxy_change_url == "http://127.0.0.1:8080/change"
+
+
+def test_settings_require_public_ip_verification_for_change_url(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
+    monkeypatch.setenv("AVITO_PROXY_POOL_FILE", "")
+    monkeypatch.setenv("AVITO_PROXY_MODE", "direct")
+    monkeypatch.setenv("AVITO_PROXY_CHANGE_URL", "https://rotate.example.test/secret")
+    monkeypatch.setenv("AVITO_LOG_PUBLIC_IP", "false")
+
+    with pytest.raises(ValueError, match="AVITO_LOG_PUBLIC_IP=true"):
+        load_settings()
 
 
 def test_telegram_transport_applies_rdns(monkeypatch) -> None:
@@ -127,3 +179,57 @@ def test_telegram_transport_applies_rdns(monkeypatch) -> None:
     session = create_telegram_session(settings)
     assert session._connector_init["rdns"] is False
     asyncio.run(session.close())
+
+
+def test_duplicate_env_keys_are_reported(tmp_path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "AVITO_TRANSPORT=browser\n"
+        "# AVITO_TRANSPORT=http\n"
+        "AVITO_TRANSPORT=hybrid\n"
+        "AVITO_PROXY_MODE=direct\n",
+        encoding="utf-8",
+    )
+
+    assert _env_duplicates(env_path) == ("AVITO_TRANSPORT",)
+
+
+def test_settings_reject_excessive_retry_burst(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:test-token")
+    monkeypatch.setenv("AVITO_PROXY_POOL_FILE", "")
+    monkeypatch.setenv("AVITO_PROXY_MODE", "direct")
+    monkeypatch.setenv("REQUEST_RETRIES", "20")
+
+    with pytest.raises(ValueError, match="не больше 5"):
+        load_settings()
+
+
+def test_settings_reject_too_frequent_global_search_interval(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:test-token")
+    monkeypatch.setenv("AVITO_PROXY_POOL_FILE", "")
+    monkeypatch.setenv("AVITO_PROXY_MODE", "direct")
+    monkeypatch.setenv("SEARCH_INTERVAL_SECONDS", "900")
+
+    with pytest.raises(ValueError, match="не меньше 1800"):
+        load_settings()
+
+
+def test_settings_rejects_misspelled_boolean(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:test-token")
+    monkeypatch.setenv("AVITO_PROXY_POOL_FILE", "")
+    monkeypatch.setenv("AVITO_PROXY_MODE", "direct")
+    monkeypatch.setenv("AVITO_PROXY_ROTATION_ENABLED", "treu")
+
+    with pytest.raises(ValueError, match="AVITO_PROXY_ROTATION_ENABLED"):
+        load_settings()
+
+
+def test_settings_rejects_incoherent_hybrid_browser_identity(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:test-token")
+    monkeypatch.setenv("AVITO_PROXY_POOL_FILE", "")
+    monkeypatch.setenv("AVITO_PROXY_MODE", "direct")
+    monkeypatch.setenv("AVITO_TRANSPORT", "hybrid")
+    monkeypatch.setenv("AVITO_BROWSER_STEALTH", "false")
+
+    with pytest.raises(ValueError, match="требует AVITO_BROWSER_STEALTH=true"):
+        load_settings()

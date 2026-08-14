@@ -89,6 +89,21 @@ def test_manager_creates_and_closes_a_fresh_context_for_every_session() -> None:
     assert "storage_state" not in browser.options[0]
 
 
+def test_non_stealth_manager_uses_real_chromium_browser_signals(tmp_path) -> None:
+    browser = BrowserStub()
+    manager = BrowserIdentityManager(browser, stealth=False)  # type: ignore[arg-type]
+    storage_state = tmp_path / "storage.json"
+
+    asyncio.run(manager.create_session(_identity(), storage_state=storage_state))
+
+    options = browser.options[0]
+    assert options["storage_state"] == str(storage_state)
+    assert "user_agent" not in options
+    assert "is_mobile" not in options
+    assert browser.contexts[0].headers is None
+    assert browser.contexts[0].scripts == []
+
+
 def test_snapshot_diff_reports_nested_paths() -> None:
     differences = diff_browser_snapshots(
         {"timezone": "Europe/Moscow", "viewport": {"width": 1920, "height": 1080}},

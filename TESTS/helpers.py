@@ -28,6 +28,7 @@ def settings(database_path: Path, **overrides: object) -> Settings:
         "avito_proxy_rotate_after_reloads": 1,
         "avito_proxy_rotation_delay_seconds": 15,
         "avito_proxy_max_rotations": 5,
+        "avito_proxy_network_failure_cooldown_seconds": 300,
         "avito_log_public_ip": True,
         "avito_transport": "http",
         "avito_http_impersonate": "chrome",

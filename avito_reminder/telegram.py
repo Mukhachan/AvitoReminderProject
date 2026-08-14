@@ -63,7 +63,6 @@ PRICE_KEYBOARD = ReplyKeyboardMarkup(
 )
 
 INTERVAL_OPTIONS = {
-    "15 минут": 15 * 60,
     "30 минут": 30 * 60,
     "1 час": 60 * 60,
     "3 часа": 3 * 60 * 60,
@@ -73,9 +72,9 @@ INTERVAL_OPTIONS = {
 
 INTERVAL_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="15 минут"), KeyboardButton(text="30 минут")],
-        [KeyboardButton(text="1 час"), KeyboardButton(text="3 часа")],
-        [KeyboardButton(text="6 часов"), KeyboardButton(text="24 часа")],
+        [KeyboardButton(text="30 минут"), KeyboardButton(text="1 час")],
+        [KeyboardButton(text="3 часа"), KeyboardButton(text="6 часов")],
+        [KeyboardButton(text="24 часа")],
         [KeyboardButton(text=BACK_TEXT), KeyboardButton(text=CANCEL_TEXT)],
     ],
     resize_keyboard=True,
@@ -124,19 +123,26 @@ def _parse_price(value: str) -> int | None:
     return price
 
 
-def _parse_interval(value: str) -> int:
+def _parse_interval(value: str, minimum_seconds: int = 30 * 60) -> int:
     normalized = " ".join(value.strip().lower().split())
-    for label, seconds in INTERVAL_OPTIONS.items():
-        if normalized == label.lower():
-            return seconds
-
-    match = re.fullmatch(r"(\d+)\s*(мин(?:ут[а-я]*)?|ч(?:ас(?:а|ов)?)?)", normalized)
-    if not match:
-        raise ValueError("Выберите интервал кнопкой или введите, например, «45 минут»")
-    amount = int(match.group(1))
-    seconds = amount * (3600 if match.group(2).startswith(("ч", "час")) else 60)
-    if seconds < 15 * 60:
-        raise ValueError("Минимальный интервал — 15 минут")
+    seconds = next(
+        (
+            option_seconds
+            for label, option_seconds in INTERVAL_OPTIONS.items()
+            if normalized == label.lower()
+        ),
+        None,
+    )
+    if seconds is None:
+        match = re.fullmatch(r"(\d+)\s*(мин(?:ут[а-я]*)?|ч(?:ас(?:а|ов)?)?)", normalized)
+        if not match:
+            raise ValueError("Выберите интервал кнопкой или введите, например, «45 минут»")
+        amount = int(match.group(1))
+        seconds = amount * (3600 if match.group(2).startswith(("ч", "час")) else 60)
+    if seconds < minimum_seconds:
+        raise ValueError(
+            f"Минимальный интервал — {_format_interval(minimum_seconds)}"
+        )
     if seconds > 24 * 60 * 60:
         raise ValueError("Максимальный интервал — 24 часа")
     return seconds
@@ -317,7 +323,9 @@ async def _create_search(
     price_min: int | None,
     price_max: int | None,
     interval_seconds: int,
+    minimum_interval_seconds: int = 30 * 60,
 ) -> Search | None:
+    interval_seconds = max(interval_seconds, minimum_interval_seconds)
     existing = await database.list_searches(message.chat.id)
     if len(existing) >= 20:
         await message.answer(
@@ -433,7 +441,8 @@ async def add_search_start(
             city=parts[0],
             price_min=price_min,
             price_max=price_max,
-            interval_seconds=max(15 * 60, settings.search_interval_seconds),
+            interval_seconds=settings.search_interval_seconds,
+            minimum_interval_seconds=settings.search_interval_seconds,
         )
         return
 
@@ -508,13 +517,16 @@ async def add_price_max(message: Message, state: FSMContext) -> None:
 
 
 @router.message(AddSearch.interval, F.text)
-async def add_interval(message: Message, state: FSMContext) -> None:
+async def add_interval(message: Message, state: FSMContext, settings: Settings) -> None:
     if message.text == BACK_TEXT:
         await state.set_state(AddSearch.price_max)
         await _ask_price_max(message)
         return
     try:
-        interval_seconds = _parse_interval(message.text or "")
+        interval_seconds = _parse_interval(
+            message.text or "",
+            minimum_seconds=settings.search_interval_seconds,
+        )
     except ValueError as exc:
         await message.answer(html.escape(str(exc)))
         return
@@ -538,6 +550,7 @@ async def add_search_callback(
     callback: CallbackQuery,
     state: FSMContext,
     database: Database,
+    settings: Settings,
 ) -> None:
     if not callback.data or not isinstance(callback.message, Message):
         await callback.answer()
@@ -583,6 +596,7 @@ async def add_search_callback(
         price_min=price_min,
         price_max=price_max,
         interval_seconds=int(data["interval_seconds"]),
+        minimum_interval_seconds=settings.search_interval_seconds,
     )
 
 

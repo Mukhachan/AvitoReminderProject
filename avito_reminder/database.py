@@ -18,9 +18,16 @@ def as_iso(value: datetime) -> str:
 
 
 class Database:
-    def __init__(self, path: Path, *, schedule_spread_seconds: int = 0):
+    def __init__(
+        self,
+        path: Path,
+        *,
+        schedule_spread_seconds: int = 0,
+        minimum_interval_seconds: int = 0,
+    ):
         self.path = path
         self.schedule_spread_seconds = max(0, schedule_spread_seconds)
+        self.minimum_interval_seconds = max(0, minimum_interval_seconds)
 
     def _spread_delay(self, search_id: int) -> int:
         if self.schedule_spread_seconds <= 0:
@@ -83,6 +90,17 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_seen_pending
                     ON seen_items(search_id, notified, first_seen_at);
+
+                CREATE TABLE IF NOT EXISTS runtime_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS notification_retries (
+                    search_id INTEGER PRIMARY KEY,
+                    retry_at TEXT NOT NULL,
+                    FOREIGN KEY (search_id) REFERENCES searches(id) ON DELETE CASCADE
+                );
                 """
             )
             columns = {
@@ -93,6 +111,11 @@ class Database:
             connection.execute(
                 "UPDATE searches SET interval_seconds = 900 WHERE interval_seconds IS NULL"
             )
+            if self.minimum_interval_seconds:
+                connection.execute(
+                    "UPDATE searches SET interval_seconds = ? WHERE interval_seconds < ?",
+                    (self.minimum_interval_seconds, self.minimum_interval_seconds),
+                )
 
     @staticmethod
     def _search(row: sqlite3.Row | None) -> Search | None:
@@ -152,8 +175,12 @@ class Database:
         url: str,
         interval_seconds: int,
     ) -> Search:
-        now = as_iso(utc_now())
+        interval_seconds = max(interval_seconds, self.minimum_interval_seconds)
+        now_value = utc_now()
+        now = as_iso(now_value)
         with self._connect() as connection:
+            not_before = self._avito_not_before_from_connection(connection)
+            next_check = max(now_value, not_before or now_value)
             cursor = connection.execute(
                 """
                 INSERT INTO searches (
@@ -171,14 +198,17 @@ class Database:
                     interval_seconds,
                     url,
                     now,
-                    now,
+                    as_iso(next_check),
                 ),
             )
             row = connection.execute(
                 "SELECT * FROM searches WHERE id = ?", (cursor.lastrowid,)
             ).fetchone()
-            if row is not None and self.schedule_spread_seconds:
-                next_check = utc_now() + timedelta(seconds=self._spread_delay(row["id"]))
+            if row is not None:
+                next_check = max(
+                    utc_now(),
+                    not_before or utc_now(),
+                ) + timedelta(seconds=self._spread_delay(row["id"]))
                 connection.execute(
                     "UPDATE searches SET next_check_at = ? WHERE id = ?",
                     (as_iso(next_check), row["id"]),
@@ -217,6 +247,10 @@ class Database:
 
     def _due_searches(self, limit: int) -> list[Search]:
         with self._connect() as connection:
+            now = utc_now()
+            not_before = self._avito_not_before_from_connection(connection)
+            if not_before is not None and not_before > now:
+                return []
             rows = connection.execute(
                 """
                 SELECT * FROM searches
@@ -224,7 +258,7 @@ class Database:
                 ORDER BY next_check_at
                 LIMIT ?
                 """,
-                (as_iso(utc_now()), limit),
+                (as_iso(now), limit),
             ).fetchall()
         return [search for row in rows if (search := self._search(row)) is not None]
 
@@ -233,9 +267,11 @@ class Database:
 
     def _set_active(self, search_id: int, chat_id: int, active: bool) -> bool:
         next_check = utc_now()
-        if active:
-            next_check += timedelta(seconds=self._spread_delay(search_id))
         with self._connect() as connection:
+            if active:
+                not_before = self._avito_not_before_from_connection(connection)
+                next_check = max(next_check, not_before or next_check)
+                next_check += timedelta(seconds=self._spread_delay(search_id))
             cursor = connection.execute(
                 "UPDATE searches SET active = ?, next_check_at = ? WHERE id = ? AND chat_id = ?",
                 (int(active), as_iso(next_check), search_id, chat_id),
@@ -248,12 +284,24 @@ class Database:
     def _postpone_active_searches(self, delay_seconds: int) -> int:
         resume_at = utc_now() + timedelta(seconds=delay_seconds)
         with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO runtime_state (key, value) VALUES ('avito_not_before', ?)
+                ON CONFLICT(key) DO UPDATE SET value = CASE
+                    WHEN runtime_state.value > excluded.value
+                    THEN runtime_state.value ELSE excluded.value
+                END
+                """,
+                (as_iso(resume_at),),
+            )
+            not_before = self._avito_not_before_from_connection(connection)
+            assert not_before is not None
             rows = connection.execute(
                 "SELECT id, next_check_at FROM searches WHERE active = 1"
             ).fetchall()
             updated = 0
             for row in rows:
-                target = resume_at + timedelta(seconds=self._spread_delay(row["id"]))
+                target = not_before + timedelta(seconds=self._spread_delay(row["id"]))
                 current = datetime.fromisoformat(row["next_check_at"])
                 if current >= target:
                     continue
@@ -263,6 +311,26 @@ class Database:
                 )
                 updated += cursor.rowcount
             return updated
+
+    @staticmethod
+    def _avito_not_before_from_connection(
+        connection: sqlite3.Connection,
+    ) -> datetime | None:
+        row = connection.execute(
+            "SELECT value FROM runtime_state WHERE key = 'avito_not_before'"
+        ).fetchone()
+        return datetime.fromisoformat(row["value"]) if row is not None else None
+
+    async def avito_retry_after_seconds(self) -> int:
+        return await asyncio.to_thread(self._avito_retry_after_seconds)
+
+    def _avito_retry_after_seconds(self) -> int:
+        with self._connect() as connection:
+            not_before = self._avito_not_before_from_connection(connection)
+        if not_before is None:
+            return 0
+        remaining = (not_before - utc_now()).total_seconds()
+        return max(0, int(remaining + 0.999))
 
     async def delete_search(self, search_id: int, chat_id: int) -> bool:
         return await asyncio.to_thread(self._delete_search, search_id, chat_id)
@@ -333,6 +401,57 @@ class Database:
             for row in rows
         ]
 
+    async def searches_with_pending_items(self, limit: int = 50) -> list[Search]:
+        return await asyncio.to_thread(self._searches_with_pending_items, limit)
+
+    def _searches_with_pending_items(self, limit: int) -> list[Search]:
+        with self._connect() as connection:
+            now = as_iso(utc_now())
+            rows = connection.execute(
+                """
+                SELECT searches.*
+                FROM searches
+                WHERE searches.active = 1
+                  AND NOT EXISTS (
+                    SELECT 1 FROM notification_retries
+                    WHERE notification_retries.search_id = searches.id
+                      AND notification_retries.retry_at > ?
+                  )
+                  AND EXISTS (
+                    SELECT 1 FROM seen_items
+                    WHERE seen_items.search_id = searches.id
+                      AND seen_items.notified = 0
+                )
+                ORDER BY searches.id
+                LIMIT ?
+                """,
+                (now, limit),
+            ).fetchall()
+        return [search for row in rows if (search := self._search(row)) is not None]
+
+    async def postpone_pending_delivery(self, search_id: int, delay_seconds: int) -> None:
+        await asyncio.to_thread(self._postpone_pending_delivery, search_id, delay_seconds)
+
+    def _postpone_pending_delivery(self, search_id: int, delay_seconds: int) -> None:
+        retry_at = utc_now() + timedelta(seconds=delay_seconds)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO notification_retries (search_id, retry_at) VALUES (?, ?)
+                ON CONFLICT(search_id) DO UPDATE SET retry_at = excluded.retry_at
+                """,
+                (search_id, as_iso(retry_at)),
+            )
+
+    async def clear_pending_delivery_retry(self, search_id: int) -> None:
+        await asyncio.to_thread(self._clear_pending_delivery_retry, search_id)
+
+    def _clear_pending_delivery_retry(self, search_id: int) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM notification_retries WHERE search_id = ?", (search_id,)
+            )
+
     async def mark_notified(self, search_id: int, item_id: str) -> None:
         await asyncio.to_thread(self._mark_notified, search_id, item_id)
 
@@ -348,12 +467,25 @@ class Database:
 
     def _mark_success(self, search_id: int, interval_seconds: int) -> None:
         now = utc_now()
-        next_check = now + timedelta(seconds=interval_seconds)
+        spread_seconds = self._spread_delay(search_id)
+        next_check = now + timedelta(seconds=interval_seconds + spread_seconds)
         with self._connect() as connection:
+            # Serialize the runtime cooldown read with the row update.  A global
+            # postpone that wins the lock first is preserved; one that runs after
+            # this transaction updates the row afterwards.  Per-search failure
+            # backoff is intentionally reset by a successful manual/automatic run.
+            connection.execute("BEGIN IMMEDIATE")
+            not_before = self._avito_not_before_from_connection(connection)
+            if not_before is not None and not_before > now:
+                next_check = max(
+                    next_check,
+                    not_before + timedelta(seconds=spread_seconds),
+                )
             connection.execute(
                 """
                 UPDATE searches
-                SET initialized = 1, last_checked_at = ?, next_check_at = ?,
+                SET initialized = 1, last_checked_at = ?,
+                    next_check_at = ?,
                     last_error = NULL, failure_count = 0
                 WHERE id = ?
                 """,
@@ -365,17 +497,25 @@ class Database:
 
     def _mark_failure(self, search_id: int, message: str, retry_seconds: int) -> None:
         now = utc_now()
+        next_check = now + timedelta(
+            seconds=retry_seconds + self._spread_delay(search_id)
+        )
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE searches
-                SET last_checked_at = ?, next_check_at = ?, last_error = ?,
+                SET last_checked_at = ?,
+                    next_check_at = CASE
+                        WHEN next_check_at > ? THEN next_check_at ELSE ?
+                    END,
+                    last_error = ?,
                     failure_count = failure_count + 1
                 WHERE id = ?
                 """,
                 (
                     as_iso(now),
-                    as_iso(now + timedelta(seconds=retry_seconds)),
+                    as_iso(next_check),
+                    as_iso(next_check),
                     message[:500],
                     search_id,
                 ),

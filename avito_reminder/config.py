@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,13 +9,27 @@ from urllib.parse import urlsplit
 from dotenv import load_dotenv
 
 
-def _as_bool(value: str | None, default: bool) -> bool:
+def _as_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
     if value is None:
         return default
-    return value.strip().lower() in {"1", "true", "yes", "on", "да"}
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on", "да"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "нет"}:
+        return False
+    raise ValueError(
+        f"{name} должен быть логическим значением "
+        "(true/false, yes/no, on/off или 1/0)"
+    )
 
 
-def _as_int(name: str, default: int, minimum: int = 1) -> int:
+def _as_int(
+    name: str,
+    default: int,
+    minimum: int = 1,
+    maximum: int | None = None,
+) -> int:
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -24,6 +39,8 @@ def _as_int(name: str, default: int, minimum: int = 1) -> int:
         raise ValueError(f"{name} должен быть целым числом") from exc
     if value < minimum:
         raise ValueError(f"{name} должен быть не меньше {minimum}")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{name} должен быть не больше {maximum}")
     return value
 
 
@@ -69,6 +86,21 @@ def _proxy_pool(path: Path | None, primary_proxy: str | None) -> tuple[str, ...]
     return tuple(proxies)
 
 
+def _env_duplicates(path: Path = Path(".env")) -> tuple[str, ...]:
+    """Return duplicate active keys; dotenv otherwise silently keeps one value."""
+    if not path.is_file():
+        return ()
+    counts: dict[str, int] = {}
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+    return tuple(sorted(key for key, count in counts.items() if count > 1))
+
+
 def _http_url(name: str) -> str | None:
     raw = os.getenv(name, "").strip()
     if not raw:
@@ -76,6 +108,19 @@ def _http_url(name: str) -> str | None:
     parsed = urlsplit(raw)
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
         raise ValueError(f"{name}: ожидается полный http/https URL")
+    if parsed.scheme.lower() == "http":
+        hostname = parsed.hostname.lower()
+        is_local = hostname == "localhost"
+        try:
+            address = ipaddress.ip_address(hostname)
+        except ValueError:
+            address = None
+        if address is not None:
+            is_local = address.is_loopback or address.is_private
+        if not is_local:
+            raise ValueError(
+                f"{name}: удалённый URL смены IP должен использовать HTTPS"
+            )
     return raw
 
 
@@ -112,6 +157,7 @@ class Settings:
     avito_proxy_rotate_after_reloads: int
     avito_proxy_rotation_delay_seconds: int
     avito_proxy_max_rotations: int
+    avito_proxy_network_failure_cooldown_seconds: int
     avito_log_public_ip: bool
     avito_transport: str
     avito_http_impersonate: str
@@ -144,6 +190,12 @@ class Settings:
 
 def load_settings(*, require_bot_token: bool = True) -> Settings:
     load_dotenv()
+    duplicates = _env_duplicates()
+    if duplicates:
+        raise ValueError(
+            ".env содержит повторяющиеся активные параметры: "
+            + ", ".join(duplicates)
+        )
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if require_bot_token and not token:
         raise RuntimeError(
@@ -166,11 +218,31 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
         raise ValueError(
             "AVITO_PROXY_MODE=proxy требует AVITO_PROXY или AVITO_PROXY_POOL_FILE"
         )
+    avito_transport = _choice(
+        "AVITO_TRANSPORT",
+        "browser",
+        {"browser", "http", "hybrid"},
+    )
+    avito_browser_stealth = _as_bool("AVITO_BROWSER_STEALTH", False)
+    avito_log_public_ip = _as_bool("AVITO_LOG_PUBLIC_IP", True)
+    if avito_transport == "hybrid" and not avito_browser_stealth:
+        raise ValueError(
+            "AVITO_TRANSPORT=hybrid требует AVITO_BROWSER_STEALTH=true; "
+            "для рекомендуемого режима оставьте AVITO_TRANSPORT=browser"
+        )
+    if avito_proxy_change_url and not avito_log_public_ip:
+        raise ValueError(
+            "AVITO_PROXY_CHANGE_URL требует AVITO_LOG_PUBLIC_IP=true, "
+            "чтобы проверить фактическую смену выходного IP"
+        )
+
     return Settings(
         bot_token=token,
         database_path=database_path,
         scheduler_poll_seconds=_as_int("SCHEDULER_POLL_SECONDS", 15),
-        search_interval_seconds=_as_int("SEARCH_INTERVAL_SECONDS", 1800, minimum=60),
+        search_interval_seconds=_as_int(
+            "SEARCH_INTERVAL_SECONDS", 1800, minimum=1800
+        ),
         search_result_cache_seconds=_as_int(
             "SEARCH_RESULT_CACHE_SECONDS", 600, minimum=0
         ),
@@ -178,60 +250,64 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
             "SEARCH_SCHEDULE_SPREAD_SECONDS", 300, minimum=0
         ),
         request_timeout_seconds=_as_int("REQUEST_TIMEOUT_SECONDS", 25, minimum=5),
-        request_retries=_as_int("REQUEST_RETRIES", 3),
+        request_retries=_as_int("REQUEST_RETRIES", 3, maximum=5),
         max_results=_as_int("MAX_RESULTS", 30),
         max_notifications_per_check=_as_int("MAX_NOTIFICATIONS_PER_CHECK", 5),
-        notify_initial_results=_as_bool(os.getenv("NOTIFY_INITIAL_RESULTS"), True),
+        notify_initial_results=_as_bool("NOTIFY_INITIAL_RESULTS", True),
         telegram_proxy=_proxy_url("TELEGRAM_PROXY"),
-        telegram_proxy_rdns=_as_bool(os.getenv("TELEGRAM_PROXY_RDNS"), True),
+        telegram_proxy_rdns=_as_bool("TELEGRAM_PROXY_RDNS", True),
         avito_cookie=os.getenv("AVITO_COOKIE") or None,
         http_proxy=avito_proxy,
         avito_proxy_pool=avito_proxy_pool,
         avito_proxy_change_url=avito_proxy_change_url,
         avito_proxy_mode=avito_proxy_mode,
-        avito_proxy_rdns=_as_bool(os.getenv("AVITO_PROXY_RDNS"), True),
+        avito_proxy_rdns=_as_bool("AVITO_PROXY_RDNS", True),
         avito_proxy_rotation_enabled=_as_bool(
-            os.getenv("AVITO_PROXY_ROTATION_ENABLED"),
+            "AVITO_PROXY_ROTATION_ENABLED",
             bool(avito_proxy_pool or avito_proxy_change_url),
         ),
         avito_proxy_rotate_after_reloads=_as_int(
-            "AVITO_PROXY_ROTATE_AFTER_RELOADS", 1
+            "AVITO_PROXY_ROTATE_AFTER_RELOADS", 1, maximum=3
         ),
         avito_proxy_rotation_delay_seconds=_as_int(
             "AVITO_PROXY_ROTATION_DELAY_SECONDS", 15,
             minimum=0,
         ),
-        avito_proxy_max_rotations=_as_int("AVITO_PROXY_MAX_ROTATIONS", 1),
-        avito_log_public_ip=_as_bool(os.getenv("AVITO_LOG_PUBLIC_IP"), True),
-        avito_transport=_choice(
-            "AVITO_TRANSPORT",
-            "hybrid",
-            {"browser", "http", "hybrid"},
+        avito_proxy_max_rotations=_as_int("AVITO_PROXY_MAX_ROTATIONS", 1, maximum=5),
+        avito_proxy_network_failure_cooldown_seconds=_as_int(
+            "AVITO_PROXY_NETWORK_FAILURE_COOLDOWN_SECONDS",
+            300,
+            minimum=30,
+            maximum=3600,
         ),
+        avito_log_public_ip=avito_log_public_ip,
+        avito_transport=avito_transport,
         avito_http_impersonate=os.getenv("AVITO_HTTP_IMPERSONATE", "chrome").strip()
         or "chrome",
-        avito_api_max_pages=_as_int("AVITO_API_MAX_PAGES", 1),
-        avito_initial_api_max_pages=_as_int("AVITO_INITIAL_API_MAX_PAGES", 3),
-        avito_browser_headless=_as_bool(os.getenv("AVITO_BROWSER_HEADLESS"), True),
+        avito_api_max_pages=_as_int("AVITO_API_MAX_PAGES", 1, maximum=5),
+        avito_initial_api_max_pages=_as_int(
+            "AVITO_INITIAL_API_MAX_PAGES", 1, maximum=5
+        ),
+        avito_browser_headless=_as_bool("AVITO_BROWSER_HEADLESS", True),
         avito_browser_profile_path=Path(
             os.getenv("AVITO_BROWSER_PROFILE_PATH", "data/chromium-profile")
         ),
         avito_chromium_executable=os.getenv("AVITO_CHROMIUM_EXECUTABLE") or None,
-        avito_browser_stealth=_as_bool(os.getenv("AVITO_BROWSER_STEALTH"), True),
+        avito_browser_stealth=avito_browser_stealth,
         avito_browser_snapshots=_as_bool(
-            os.getenv("AVITO_BROWSER_SNAPSHOTS"), True
+            "AVITO_BROWSER_SNAPSHOTS", True
         ),
         avito_identity_rotate_on_block=_as_bool(
-            os.getenv("AVITO_IDENTITY_ROTATE_ON_BLOCK"), True
+            "AVITO_IDENTITY_ROTATE_ON_BLOCK", True
         ),
         avito_new_user_per_session=_as_bool(
-            os.getenv("AVITO_NEW_USER_PER_SESSION"), False
+            "AVITO_NEW_USER_PER_SESSION", False
         ),
         avito_identity_rotate_on_browser_start=_as_bool(
-            os.getenv("AVITO_IDENTITY_ROTATE_ON_BROWSER_START"), False
+            "AVITO_IDENTITY_ROTATE_ON_BROWSER_START", False
         ),
         avito_proxy_rotate_on_browser_start=_as_bool(
-            os.getenv("AVITO_PROXY_ROTATE_ON_BROWSER_START"), False
+            "AVITO_PROXY_ROTATE_ON_BROWSER_START", False
         ),
         avito_browser_locale=os.getenv("AVITO_BROWSER_LOCALE", "ru-RU").strip()
         or "ru-RU",
@@ -251,7 +327,9 @@ def load_settings(*, require_bot_token: bool = True) -> Settings:
         avito_page_reload_jitter_seconds=_as_int(
             "AVITO_PAGE_RELOAD_JITTER_SECONDS", 30, minimum=0
         ),
-        avito_error_reload_attempts=_as_int("AVITO_ERROR_RELOAD_ATTEMPTS", 3),
+        avito_error_reload_attempts=_as_int(
+            "AVITO_ERROR_RELOAD_ATTEMPTS", 3, maximum=5
+        ),
         avito_cooldown_seconds=_as_int("AVITO_COOLDOWN_SECONDS", 21_600),
         user_agent=os.getenv(
             "AVITO_USER_AGENT",

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager, suppress
@@ -13,6 +12,7 @@ from playwright.async_api import Browser, BrowserContext, Page
 from playwright.async_api import Error as PlaywrightError
 
 from .browser_identity import BrowserIdentity, stealth_init_script
+from .diagnostics import prune_browser_session_snapshots, write_private_json
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,7 @@ async () => {
     : [];
   return {
     userAgent: navigator.userAgent,
+    webdriver: navigator.webdriver,
     language: navigator.language,
     languages: Array.from(navigator.languages),
     platform: navigator.platform,
@@ -82,13 +83,8 @@ async def collect_browser_snapshot(page: Page) -> dict[str, Any]:
 
 
 def save_browser_snapshot(snapshot: Mapping[str, Any], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(dict(snapshot), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temporary.replace(path)
+    write_private_json(path, snapshot)
+    prune_browser_session_snapshots(path.parent)
 
 
 def diff_browser_snapshots(
@@ -146,23 +142,42 @@ class BrowserIdentityManager:
         self.proxy = proxy
         self.stealth = stealth
 
-    async def create_session(self, identity: BrowserIdentity) -> BrowserSession:
+    async def create_session(
+        self,
+        identity: BrowserIdentity,
+        *,
+        storage_state: Path | None = None,
+    ) -> BrowserSession:
+        options: dict[str, object] = {
+            "locale": identity.locale,
+            "timezone_id": identity.timezone_id,
+            "viewport": identity.viewport,
+            "screen": identity.screen,
+            "device_scale_factor": identity.device_scale_factor,
+            "accept_downloads": False,
+            "service_workers": "allow",
+        }
+        if self.proxy is not None:
+            options["proxy"] = self.proxy
+        if storage_state is not None:
+            options["storage_state"] = str(storage_state)
+        if self.stealth:
+            # Only the explicitly enabled experimental mode overrides browser/OS
+            # signals.  Normal production sessions use Chromium's real UA/platform.
+            options.update(
+                {
+                    "user_agent": identity.user_agent,
+                    "is_mobile": identity.is_mobile,
+                    "has_touch": identity.is_mobile,
+                }
+            )
+
         context = await self.browser.new_context(
-            proxy=self.proxy,
-            user_agent=identity.user_agent,
-            locale=identity.locale,
-            timezone_id=identity.timezone_id,
-            viewport=identity.viewport,
-            screen=identity.screen,
-            device_scale_factor=identity.device_scale_factor,
-            is_mobile=identity.is_mobile,
-            has_touch=identity.is_mobile,
-            accept_downloads=False,
-            service_workers="allow",
+            **options,
         )
         try:
-            await context.set_extra_http_headers(identity.http_headers)
             if self.stealth:
+                await context.set_extra_http_headers(identity.http_headers)
                 await context.add_init_script(script=stealth_init_script(identity))
             page = await context.new_page()
         except BaseException:

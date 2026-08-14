@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -45,7 +46,9 @@ from .avito_mfe import (
 from .browser_identity import (
     BrowserIdentity,
     generate_browser_identity,
+    load_browser_identity,
     resolve_http_impersonate,
+    save_browser_identity,
 )
 from .browser_sessions import (
     BrowserIdentityManager,
@@ -54,6 +57,15 @@ from .browser_sessions import (
     save_browser_snapshot,
 )
 from .config import Settings
+from .diagnostics import (
+    PRIVATE_FILE_MODE,
+    ensure_private_directory,
+    harden_file_permissions,
+    maintain_browser_storage_directory,
+    prune_avito_diagnostic_bundles,
+    write_private_json,
+    write_private_text,
+)
 from .models import AvitoItem
 
 logger = logging.getLogger(__name__)
@@ -80,6 +92,7 @@ AVITO_BLOCK_MARKERS = (
     "too many requests",
 )
 AVITO_HOME_PAGE_NAME = "главная страница"
+AVITO_SEARCH_PAGE_NAME = "страница поиска"
 AVITO_HOME_CATEGORY_MARKERS = (
     "авто",
     "недвижимость",
@@ -137,6 +150,129 @@ AVITO_HOME_READY_SCRIPT = """
   return searchIsVisible && submitIsVisible && categoryCount >= 3;
 }
 """
+AVITO_HOME_TERMINAL_SCRIPT = """
+() => {
+  const isVisible = (element) => {
+    if (!element) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" &&
+      Number(style.opacity || "1") > 0 && rect.width > 0 && rect.height > 0;
+  };
+  const visible = (selector) =>
+    Array.from(document.querySelectorAll(selector)).some(isVisible);
+  const visibleText = (selector, expected) =>
+    Array.from(document.querySelectorAll(selector)).some((element) => {
+      if (!isVisible(element)) return false;
+      const text = (element.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
+      return expected.some((value) => text.includes(value));
+    });
+
+  const blocked = visible('[data-marker="captcha"]') || visibleText(
+    "h1, h2, h3, p, button",
+    [
+      "доступ ограничен: проблема с ip",
+      "блокировка ip",
+      "нажмите для подтверждения",
+      "продолжить для решения капчи",
+    ],
+  );
+  const search = visible(
+    '[data-marker="search-form/suggest/input"], ' +
+    'input[placeholder*="Поиск по объявлениям" i]',
+  );
+  const submit = visible('[data-marker="search-form/submit-button"]') ||
+    visibleText("button", ["найти"]);
+  const categories = [
+    "авто",
+    "недвижимость",
+    "услуги",
+    "электроника",
+    "работа",
+    "запчасти",
+  ].filter((name) => visibleText("a, button, h2, h3", [name])).length;
+  return blocked || (search && submit && categories >= 3);
+}
+"""
+AVITO_SEARCH_READY_SCRIPT = """
+() => {
+  const current = new URL(window.location.href);
+  if (!current.searchParams.get("q") || current.hash.toLowerCase() === "#block") {
+    return false;
+  }
+  const isVisible = (element) => {
+    if (!element) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" &&
+      Number(style.opacity || "1") > 0 && rect.width > 0 && rect.height > 0;
+  };
+  const visible = (selector) =>
+    Array.from(document.querySelectorAll(selector)).some(isVisible);
+  const visibleText = (selector, expected) =>
+    Array.from(document.querySelectorAll(selector)).some((element) => {
+      if (!isVisible(element)) return false;
+      const text = (element.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
+      return expected.some((value) => text.includes(value));
+    });
+  const blockIsVisible = visible('[data-marker="captcha"]') || visibleText(
+    "h1, h2, h3, p, button",
+    [
+      "доступ ограничен: проблема с ip",
+      "блокировка ip",
+      "нажмите для подтверждения",
+      "продолжить для решения капчи",
+    ],
+  );
+  if (blockIsVisible) return false;
+  return visible(
+    '[data-marker="item"], ' +
+    '[data-item-id][itemtype*="Product"], ' +
+    '[data-marker="search-results/empty"]',
+  ) || visibleText(
+    'main, [data-marker="catalog-serp"]',
+    ["ничего не найдено", "объявлений не найдено", "нет подходящих объявлений"],
+  );
+}
+"""
+AVITO_SEARCH_TERMINAL_SCRIPT = """
+() => {
+  const isVisible = (element) => {
+    if (!element) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" &&
+      Number(style.opacity || "1") > 0 && rect.width > 0 && rect.height > 0;
+  };
+  const visible = (selector) =>
+    Array.from(document.querySelectorAll(selector)).some(isVisible);
+  const visibleText = (selector, expected) =>
+    Array.from(document.querySelectorAll(selector)).some((element) => {
+      if (!isVisible(element)) return false;
+      const text = (element.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
+      return expected.some((value) => text.includes(value));
+    });
+
+  const blocked = visible('[data-marker="captcha"]') || visibleText(
+    "h1, h2, h3, p, button",
+    [
+      "доступ ограничен: проблема с ip",
+      "блокировка ip",
+      "нажмите для подтверждения",
+      "продолжить для решения капчи",
+    ],
+  );
+  const result = visible(
+    '[data-marker="item"], ' +
+    '[data-item-id][itemtype*="Product"], ' +
+    '[data-marker="search-results/empty"]',
+  ) || visibleText(
+    'main, [data-marker="catalog-serp"]',
+    ["ничего не найдено", "объявлений не найдено", "нет подходящих объявлений"],
+  );
+  return blocked || result;
+}
+"""
 AVITO_SITE_DATA_CLEAR_SCRIPT = """
 async () => {
   localStorage.clear();
@@ -159,6 +295,12 @@ def _is_blocked_html(html: str) -> bool:
 
 
 def _is_captcha_html(html: str) -> bool:
+    # The transient IP page itself contains a help link/button whose text mentions
+    # solving a captcha.  Its explicit heading is the authoritative state: this
+    # page must receive the configured wait-and-reload treatment, not an immediate
+    # identity/proxy restart.
+    if _is_transient_ip_problem_html(html):
+        return False
     lowered = html.lower()
     return any(marker in lowered for marker in AVITO_CAPTCHA_MARKERS)
 
@@ -169,6 +311,8 @@ def _is_transient_ip_problem_html(html: str) -> bool:
 
 
 def _requires_immediate_restart_html(html: str) -> bool:
+    if _is_transient_ip_problem_html(html):
+        return False
     lowered = html.lower()
     return any(marker in lowered for marker in AVITO_IMMEDIATE_RESTART_MARKERS)
 
@@ -235,6 +379,43 @@ async def _is_visually_loaded_avito_home(
     return False
 
 
+def _looks_like_loaded_avito_search_html(html: str) -> bool:
+    """Recognize a populated or explicitly empty SERP despite stale hidden text."""
+    soup = BeautifulSoup(html, "html.parser")
+    return bool(
+        soup.select_one(
+            '[data-marker="catalog-serp"], '
+            '[data-marker="item"], '
+            '[data-item-id][itemtype*="Product"], '
+            '[data-marker="search-results/empty"]'
+        )
+        or extract_page_state(html) is not None
+    )
+
+
+async def _is_visually_loaded_avito_search(
+    page: Page,
+    html: str,
+    *,
+    wait_timeout_ms: int = 0,
+) -> bool:
+    """Use visible SERP state so a hidden stale block node cannot win."""
+    try:
+        if bool(await page.evaluate(AVITO_SEARCH_READY_SCRIPT)):
+            return True
+        if wait_timeout_ms > 0:
+            await page.wait_for_function(
+                AVITO_SEARCH_READY_SCRIPT,
+                timeout=wait_timeout_ms,
+            )
+            return True
+    except PlaywrightTimeoutError:
+        return False
+    except (AttributeError, PlaywrightError):
+        return _looks_like_loaded_avito_search_html(html)
+    return False
+
+
 def _retry_after_seconds(headers: Mapping[str, object] | None) -> int | None:
     if not headers:
         return None
@@ -259,9 +440,31 @@ def _retry_after_seconds(headers: Mapping[str, object] | None) -> int | None:
 
 
 def _has_target_search_query(current_url: str, target_url: str) -> bool:
-    current_query = parse_qs(urlsplit(current_url).query).get("q")
-    target_query = parse_qs(urlsplit(target_url).query).get("q")
-    return bool(target_query and current_query == target_query)
+    current = urlsplit(current_url)
+    target = urlsplit(target_url)
+    current_query = parse_qs(current.query)
+    target_query = parse_qs(target.query)
+    # Avito may remove or normalise the sort parameter while preserving the same
+    # search.  Query text and price filters are the semantic parts generated by
+    # build_search_url().  A generic city search may be canonicalised into one
+    # category segment, but deeper/unrelated paths are not accepted blindly.
+    significant_keys = {"q", "pmin", "pmax"} & set(target_query)
+    current_path = [part for part in current.path.split("/") if part]
+    target_path = [part for part in target.path.split("/") if part]
+    return bool(
+        _is_avito_url(current_url)
+        and current.fragment.lower() != "block"
+        and target_query.get("q")
+        and current_path
+        and target_path
+        and current_path[0] == target_path[0]
+        and (
+            current_path == target_path
+            or len(target_path) == 1
+            and len(current_path) == 2
+        )
+        and all(current_query.get(key) == target_query.get(key) for key in significant_keys)
+    )
 
 
 def resolve_chromium_executable(settings: Settings) -> str | None:
@@ -301,6 +504,8 @@ class AvitoSessionError(AvitoError):
 class AvitoBlockedError(AvitoError):
     """Avito requested a captcha or blocked the current IP."""
 
+    rotation_planned: bool | None = None
+
 
 class AvitoRateLimitedError(AvitoBlockedError):
     """Avito or the local request budget requires a pause without rotating IP."""
@@ -310,12 +515,28 @@ class AvitoCaptchaRequiredError(AvitoBlockedError):
     """Avito requires a user to complete the visible confirmation challenge."""
 
 
+class AvitoHardBlockedError(AvitoBlockedError):
+    """Avito explicitly reports an IP block that must not use transient waiting."""
+
+
 class AvitoParseError(AvitoError):
     """The response did not contain a supported search result format."""
 
 
 class _AvitoProxyRotationRequired(AvitoBlockedError):
     """Internal signal indicating that the current Avito route should be replaced."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostic_path: Path | None = None,
+        notification_error: AvitoBlockedError | None = None,
+        replace_identity: bool = True,
+    ):
+        super().__init__(message, diagnostic_path=diagnostic_path)
+        self.notification_error = notification_error
+        self.replace_identity = replace_identity
 
 
 BlockedCallback = Callable[[AvitoBlockedError], Awaitable[None]]
@@ -545,17 +766,24 @@ def _parse_json_ld(soup: BeautifulSoup) -> list[AvitoItem]:
 
 
 def parse_search_html(html: str) -> list[AvitoItem]:
-    if _is_blocked_html(html):
-        raise AvitoBlockedError("Avito ограничил доступ с текущего IP или запросил капчу")
-
     page_state = extract_page_state(html)
-    if page_state is not None:
+    if page_state is not None and page_state.items:
         return list(page_state.items)
 
     soup = BeautifulSoup(html, "html.parser")
     items = _parse_cards(soup) or _parse_json_ld(soup)
     if items:
         return items
+
+    # A real SERP is stronger evidence than text left in hidden/template nodes.
+    # If no structured result was found, the block marker remains authoritative.
+    if _is_blocked_html(html):
+        raise AvitoBlockedError("Avito ограничил доступ с текущего IP или запросил капчу")
+
+    if page_state is not None and page_state.catalog_item_count:
+        raise AvitoParseError(
+            "Avito вернул элементы catalog в неподдерживаемом формате"
+        )
 
     page_text = " ".join(soup.get_text(" ", strip=True).lower().split())
     empty_markers = ("ничего не найдено", "объявлений не найдено", "нет подходящих объявлений")
@@ -588,6 +816,23 @@ class _AvitoProxyPool:
         elif len(self._proxies) > 1:
             self._index = (self._index + 1) % len(self._proxies)
         return self.current
+
+    def use_direct(self) -> None:
+        if self._mode == "fallback":
+            self._index = -1
+
+    def select(self, predicate: Callable[[str], bool]) -> str | None:
+        """Select the first pool route accepted by predicate, without network I/O."""
+        if not self._proxies or self._mode == "direct":
+            return None
+        start = self._index if self._index >= 0 else 0
+        for offset in range(len(self._proxies)):
+            index = (start + offset) % len(self._proxies)
+            candidate = self._proxies[index]
+            if predicate(candidate):
+                self._index = index
+                return candidate
+        return None
 
 
 class _RouteHealthStore:
@@ -686,12 +931,32 @@ class _RouteHealthStore:
         entry["last_success_at"] = time.time()
         self._save()
 
+    def public_ip_for_route(self, route_id: str) -> str | None:
+        value = self._entry(f"route:{route_id}").get("public_ip")
+        if not isinstance(value, str):
+            return None
+        try:
+            return str(ip_address(value))
+        except ValueError:
+            return None
+
+    def associate_public_ip(self, route_id: str, public_ip: str) -> None:
+        self._entry(f"route:{route_id}")["public_ip"] = public_ip
+        self._save()
+
 
 def _proxy_label(proxy_url: str | None) -> str:
     if not proxy_url:
         return "direct"
     parsed = urlsplit(proxy_url)
     return f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
+
+
+def _proxy_route_id(proxy_url: str | None) -> str:
+    """Return a credential-aware opaque route id without exposing proxy secrets."""
+    if not proxy_url:
+        return "direct"
+    return hashlib.sha256(proxy_url.encode("utf-8")).hexdigest()[:16]
 
 
 def _playwright_proxy(proxy_url: str) -> dict[str, str]:
@@ -730,6 +995,7 @@ class AvitoClient:
         self._identity_prepared_for_browser_start = False
         self._proxy_prepared_for_browser_start = False
         self._browser_lock = asyncio.Lock()
+        self._request_limiter_lock = asyncio.Lock()
         self._browser_warmed_up = False
         self._last_avito_request_at: float | None = None
         self._cooldown_until: float | None = None
@@ -749,9 +1015,11 @@ class AvitoClient:
         use_current_route: bool = True,
     ) -> str:
         selected = self._avito_proxies.current if use_current_route else proxy_url
-        route = _proxy_label(selected)
-        public_ip = self._route_public_ips.get(route)
-        return f"ip:{public_ip}" if public_ip else f"route:{route}"
+        route_id = _proxy_route_id(selected)
+        public_ip = self._route_public_ips.get(
+            route_id
+        ) or self._route_health.public_ip_for_route(route_id)
+        return f"ip:{public_ip}" if public_ip else f"route:{route_id}"
 
     async def _before_avito_request(
         self,
@@ -759,33 +1027,34 @@ class AvitoClient:
         explicit_delay_applied: bool = False,
         route_key: str | None = None,
     ) -> None:
-        key = route_key or self._route_health_key()
-        quarantine = self._route_health.quarantine_remaining(key)
-        if quarantine:
-            raise AvitoRateLimitedError(
-                f"Маршрут Avito находится в карантине ещё {quarantine} секунд",
-                retry_after_seconds=quarantine,
-            )
+        async with self._request_limiter_lock:
+            key = route_key or self._route_health_key()
+            quarantine = self._route_health.quarantine_remaining(key)
+            if quarantine:
+                raise AvitoRateLimitedError(
+                    f"Маршрут Avito находится в карантине ещё {quarantine} секунд",
+                    retry_after_seconds=quarantine,
+                )
 
-        budget_wait = self._route_health.request_budget_remaining(key)
-        if budget_wait:
-            logger.warning(
-                "Локальный лимит запросов Avito для %s исчерпан; пауза %s с",
-                key,
-                budget_wait,
-            )
-            await asyncio.sleep(budget_wait)
+            budget_wait = self._route_health.request_budget_remaining(key)
+            if budget_wait:
+                logger.warning(
+                    "Локальный лимит запросов Avito для %s исчерпан; пауза %s с",
+                    key,
+                    budget_wait,
+                )
+                await asyncio.sleep(budget_wait)
 
-        loop = asyncio.get_running_loop()
-        if self._last_avito_request_at is not None and not explicit_delay_applied:
-            minimum = self._settings.avito_min_request_interval_seconds
-            jitter = random.uniform(0, self._settings.avito_request_jitter_seconds)
-            remaining = minimum + jitter - (loop.time() - self._last_avito_request_at)
-            if remaining > 0:
-                logger.info("Пауза %.1f с перед следующим запросом Avito", remaining)
-                await asyncio.sleep(remaining)
-        self._last_avito_request_at = loop.time()
-        self._route_health.record_request(key)
+            loop = asyncio.get_running_loop()
+            if self._last_avito_request_at is not None and not explicit_delay_applied:
+                minimum = self._settings.avito_min_request_interval_seconds
+                jitter = random.uniform(0, self._settings.avito_request_jitter_seconds)
+                remaining = minimum + jitter - (loop.time() - self._last_avito_request_at)
+                if remaining > 0:
+                    logger.info("Пауза %.1f с перед следующим запросом Avito", remaining)
+                    await asyncio.sleep(remaining)
+            self._last_avito_request_at = loop.time()
+            self._route_health.record_request(key)
 
     def _record_route_success(self, route_key: str | None = None) -> None:
         self._route_health.record_success(route_key or self._route_health_key())
@@ -823,7 +1092,8 @@ class AvitoClient:
                 self._settings.user_agent,
                 self._settings.avito_http_impersonate,
             )
-            self._browser_identity = generate_browser_identity(
+            self._browser_identity = load_browser_identity(
+                profile_path=self._settings.avito_browser_profile_path,
                 user_agent=self._settings.user_agent,
                 impersonate=impersonate,
                 locale=self._settings.avito_browser_locale,
@@ -842,9 +1112,89 @@ class AvitoClient:
             timezone_id=previous.timezone_id,
             previous=previous,
         )
+        save_browser_identity(
+            self._settings.avito_browser_profile_path,
+            self._browser_identity,
+        )
         return self._browser_identity
 
     async def _prepare_browser_start(self) -> BrowserIdentity:
+        mode = self._settings.avito_proxy_mode
+        route_refreshed_by_provider = bool(
+            self._proxy_prepared_for_browser_start
+            and self._settings.avito_proxy_change_url
+        )
+        if (
+            mode == "proxy"
+            and self._avito_proxies.current
+            and not route_refreshed_by_provider
+        ):
+            selected = self._avito_proxies.select(
+                lambda proxy: self._route_health.quarantine_remaining(
+                    self._route_health_key(proxy, use_current_route=False)
+                )
+                == 0
+            )
+            if selected is None:
+                waits = [
+                    self._route_health.quarantine_remaining(
+                        self._route_health_key(proxy, use_current_route=False)
+                    )
+                    for proxy in self._settings.avito_proxy_pool
+                ]
+                remaining = min((wait for wait in waits if wait > 0), default=1)
+                raise AvitoRateLimitedError(
+                    "Все настроенные маршруты Avito находятся в карантине",
+                    retry_after_seconds=max(1, remaining),
+                )
+        elif mode == "fallback" and not route_refreshed_by_provider:
+            current_proxy = self._avito_proxies.current
+            current_key = self._route_health_key(
+                current_proxy,
+                use_current_route=False,
+            )
+            if self._route_health.quarantine_remaining(current_key):
+                previous_route = _proxy_label(current_proxy)
+                switched = False
+                direct_key = self._route_health_key(None, use_current_route=False)
+                if (
+                    current_proxy is not None
+                    and self._route_health.quarantine_remaining(direct_key) == 0
+                ):
+                    self._avito_proxies.use_direct()
+                    switched = True
+                else:
+                    selected = self._avito_proxies.select(
+                        lambda proxy: self._route_health.quarantine_remaining(
+                            self._route_health_key(proxy, use_current_route=False)
+                        )
+                        == 0
+                    )
+                    switched = selected is not None
+                if not switched:
+                    candidates: tuple[str | None, ...] = (
+                        None,
+                        *self._settings.avito_proxy_pool,
+                    )
+                    waits = [
+                        self._route_health.quarantine_remaining(
+                            self._route_health_key(
+                                proxy,
+                                use_current_route=False,
+                            )
+                        )
+                        for proxy in candidates
+                    ]
+                    remaining = min((wait for wait in waits if wait > 0), default=1)
+                    raise AvitoRateLimitedError(
+                        "Все direct/fallback-маршруты Avito находятся в карантине",
+                        retry_after_seconds=max(1, remaining),
+                    )
+                logger.info(
+                    "Avito: карантин маршрута %s ещё активен; старт через %s",
+                    previous_route,
+                    _proxy_label(self._avito_proxies.current),
+                )
         if self._browser_launches > 0:
             if (
                 self._settings.avito_identity_rotate_on_browser_start
@@ -858,7 +1208,9 @@ class AvitoClient:
             ):
                 previous_route = _proxy_label(self._avito_proxies.current)
                 await self._call_proxy_change_url()
-                next_proxy = self._avito_proxies.rotate()
+                next_proxy = self._select_next_healthy_route(
+                    self._avito_proxies.current
+                )
                 delay = self._settings.avito_proxy_rotation_delay_seconds
                 logger.info(
                     "Новый маршрут для перезапуска Chromium: %s -> %s; ожидание %s с",
@@ -975,7 +1327,46 @@ class AvitoClient:
             proxy=_playwright_proxy(proxy_url) if proxy_url else None,
             stealth=self._settings.avito_browser_stealth,
         )
-        session = await manager.create_session(self._ensure_browser_identity())
+        storage_state = self._browser_storage_state_path()
+        try:
+            maintain_browser_storage_directory(
+                storage_state.parent,
+                preserve=(storage_state,),
+            )
+        except OSError as exc:
+            logger.warning(
+                "Не удалось подготовить приватное хранилище Chromium: %s",
+                exc,
+            )
+        stored_state = (
+            storage_state
+            if not self._settings.avito_new_user_per_session
+            and storage_state.is_file()
+            and not storage_state.is_symlink()
+            else None
+        )
+        try:
+            session = await manager.create_session(
+                self._ensure_browser_identity(),
+                storage_state=stored_state,
+            )
+        except PlaywrightError:
+            if stored_state is None:
+                raise
+            # A truncated or schema-incompatible Playwright storage file must not
+            # trap every future check in the same startup failure.  Retry once
+            # without it, but preserve a valid state if Chromium itself is broken.
+            logger.warning(
+                "Saved Chromium storage state was rejected; testing a clean "
+                "route-bound session: %s",
+                stored_state,
+            )
+            session = await manager.create_session(
+                self._ensure_browser_identity(),
+                storage_state=None,
+            )
+            with suppress(OSError):
+                stored_state.unlink()
         self._browser_sessions_started += 1
         self._browser_session = session
         self._browser_context = session.context
@@ -984,6 +1375,63 @@ class AvitoClient:
             lambda *_args: self._mark_browser_context_closed(session.context),
         )
         self._browser_warmed_up = False
+
+    def _browser_storage_state_path(
+        self,
+        *,
+        identity_id: str | None = None,
+        proxy_url: str | None = None,
+    ) -> Path:
+        identity = identity_id or self._ensure_browser_identity().identity_id
+        route_id = _proxy_route_id(
+            self._avito_proxies.current if proxy_url is None else proxy_url
+        )
+        return (
+            self._settings.avito_browser_profile_path
+            / "storage"
+            / f"{route_id}-{identity}.json"
+        )
+
+    async def _save_browser_storage_state(self) -> None:
+        context = self._browser_context
+        if context is None or self._settings.avito_new_user_per_session:
+            return
+        target = self._browser_storage_state_path()
+        temporary = target.with_suffix(".tmp")
+        try:
+            maintain_browser_storage_directory(
+                target.parent,
+                preserve=(target,),
+            )
+            with suppress(OSError):
+                temporary.unlink()
+            temporary.touch(mode=PRIVATE_FILE_MODE)
+            harden_file_permissions(temporary)
+            # Playwright omits IndexedDB unless explicitly requested.  Persist it
+            # together with cookies/localStorage so a healthy route does not become
+            # a partially new session after an ordinary process restart.
+            try:
+                await context.storage_state(path=str(temporary), indexed_db=True)
+            except TypeError:
+                # Playwright <1.51 did not expose indexed_db.  Keep cookies and
+                # localStorage persistence instead of losing all healthy state.
+                await context.storage_state(path=str(temporary))
+            harden_file_permissions(temporary)
+            temporary.replace(target)
+            harden_file_permissions(target)
+            maintain_browser_storage_directory(
+                target.parent,
+                preserve=(target,),
+            )
+        except (OSError, PlaywrightError) as exc:
+            with suppress(OSError):
+                temporary.unlink()
+            logger.warning("Не удалось сохранить storage state Chromium: %s", exc)
+
+    def _discard_browser_storage_state(self, identity_id: str) -> None:
+        target = self._browser_storage_state_path(identity_id=identity_id)
+        with suppress(OSError):
+            target.unlink()
 
     async def _close_browser_session(self) -> None:
         context = self._browser_context
@@ -1026,6 +1474,7 @@ class AvitoClient:
 
         request_context = None
         route = _proxy_label(proxy_url)
+        route_id = _proxy_route_id(proxy_url)
         try:
             request_context = await self._playwright.request.new_context(
                 proxy=_playwright_proxy(proxy_url) if proxy_url else None,
@@ -1046,7 +1495,8 @@ class AvitoClient:
             if not isinstance(raw_ip, str):
                 raise ValueError("ответ не содержит поле ip")
             public_ip = str(ip_address(raw_ip.strip()))
-            self._route_public_ips[route] = public_ip
+            self._route_public_ips[route_id] = public_ip
+            self._route_health.associate_public_ip(route_id, public_ip)
             logger.info(
                 "Выходной IP Chromium для Avito: %s, route=%s",
                 public_ip,
@@ -1174,6 +1624,28 @@ class AvitoClient:
             browser_restarts = 0
             while True:
                 await self._start_browser()
+                route_quarantine = self._route_health.quarantine_remaining(
+                    self._route_health_key()
+                )
+                if route_quarantine:
+                    logger.warning(
+                        "Выходной IP маршрута %s уже в карантине ещё %s с",
+                        _proxy_label(self._avito_proxies.current),
+                        route_quarantine,
+                    )
+                    if (
+                        self._proxy_rotation_available()
+                        and rotations < self._settings.avito_proxy_max_rotations
+                    ):
+                        rotations += 1
+                        await self._rotate_avito_proxy(rotations)
+                        continue
+                    await self._close_browser_network()
+                    raise AvitoRateLimitedError(
+                        "Выбранный proxy endpoint выходит через уже "
+                        "заблокированный public IP",
+                        retry_after_seconds=route_quarantine,
+                    )
                 route_kind = "proxy" if self._avito_proxies.current else "direct"
                 self.last_route = (
                     f"chromium+curl-{route_kind}"
@@ -1204,7 +1676,39 @@ class AvitoClient:
                             retry_after_seconds=cooldown,
                         ) from exc
                     rotations += 1
-                    await self._rotate_avito_proxy(rotations)
+                    await self._rotate_avito_proxy(
+                        rotations,
+                        replace_identity=exc.replace_identity,
+                    )
+                    if exc.notification_error is not None and on_blocked is not None:
+                        try:
+                            await on_blocked(exc.notification_error)
+                        except Exception:
+                            logger.exception(
+                                "Не удалось отправить уведомление о блокировке Avito"
+                            )
+                except AvitoNetworkError:
+                    failed_route = self._route_health_key()
+                    self._route_health.quarantine(
+                        failed_route,
+                        self._settings.avito_proxy_network_failure_cooldown_seconds,
+                        "network-failure",
+                    )
+                    if (
+                        not self._proxy_rotation_available()
+                        or rotations >= self._settings.avito_proxy_max_rotations
+                    ):
+                        raise
+                    rotations += 1
+                    logger.warning(
+                        "Маршрут %s временно исключён после сетевой ошибки; "
+                        "переключаюсь на следующий доступный маршрут",
+                        _proxy_label(self._avito_proxies.current),
+                    )
+                    await self._rotate_avito_proxy(
+                        rotations,
+                        replace_identity=False,
+                    )
                 except PlaywrightError as exc:
                     if not _is_browser_closed_error(exc):
                         raise AvitoNetworkError(
@@ -1277,12 +1781,13 @@ class AvitoClient:
                     on_blocked=on_blocked,
                 )
                 if not _has_target_search_query(page.url, url):
-                    status, html, _ = await self._navigate_avito_page(
-                        page,
-                        url,
-                        page_name="страница поиска после главной",
-                        referer=f"{AVITO_BASE_URL}/",
-                        on_blocked=on_blocked,
+                    diagnostic_path = await self._save_browser_diagnostic(page, status)
+                    raise AvitoNetworkError(
+                        "Avito перенаправил поиск на другую страницу; "
+                        f"ожидался запрос q={parse_qs(urlsplit(url).query).get('q')}, "
+                        f"получен URL {page.url}. Повторный переход не выполнялся, "
+                        "чтобы не увеличивать нагрузку",
+                        diagnostic_path=diagnostic_path,
                     )
                 if status in AVITO_BLOCK_HTTP_STATUSES:
                     if status == 429:
@@ -1297,13 +1802,29 @@ class AvitoClient:
                 if status is not None and status >= 400:
                     raise AvitoNetworkError(f"Неожиданный HTTP-статус Avito: {status}")
 
-                with suppress(PlaywrightTimeoutError):
-                    await page.wait_for_selector(
-                        '[data-marker="item"], [data-item-id][itemtype*="Product"]',
-                        state="attached",
-                        timeout=min(8_000, self._settings.request_timeout_seconds * 1000),
-                    )
+                page_state = extract_page_state(html)
+                if page_state is None or not page_state.items:
+                    with suppress(PlaywrightTimeoutError):
+                        await page.wait_for_function(
+                            AVITO_SEARCH_TERMINAL_SCRIPT,
+                            timeout=self._settings.request_timeout_seconds * 1000,
+                        )
                 html = await page.content()
+                status, html, _ = await self._wait_then_reload_avito_page(
+                    page,
+                    status=status,
+                    html=html,
+                    page_name=AVITO_SEARCH_PAGE_NAME,
+                    on_blocked=on_blocked,
+                    require_expected_dom=True,
+                )
+                if not _has_target_search_query(page.url, url):
+                    diagnostic_path = await self._save_browser_diagnostic(page, status)
+                    raise AvitoNetworkError(
+                        "Avito изменил адрес поиска во время загрузки; "
+                        f"получен URL {page.url}",
+                        diagnostic_path=diagnostic_path,
+                    )
                 await self._save_browser_snapshot(page)
                 try:
                     page_state = extract_page_state(html)
@@ -1319,6 +1840,7 @@ class AvitoClient:
                                 else self._settings.avito_api_max_pages
                             ),
                         )
+                    await self._save_browser_storage_state()
                     self._record_route_success()
                     return items[: self._settings.max_results]
                 except (AvitoBlockedError, AvitoParseError) as exc:
@@ -1341,9 +1863,15 @@ class AvitoClient:
                         type(exc).__name__,
                         exc,
                     )
+                    self._route_health.quarantine(
+                        self._route_health_key(),
+                        self._settings.avito_proxy_network_failure_cooldown_seconds,
+                        "network-failure",
+                    )
                     raise _AvitoProxyRotationRequired(
                         "Прокси не открыл Avito, вкладка осталась about:blank; "
-                        "требуется сменить IP"
+                        "требуется сменить IP",
+                        replace_identity=False,
                     ) from exc
                 last_diagnostic_path = await self._save_browser_diagnostic(page, None)
                 if attempt < self._settings.request_retries:
@@ -1370,6 +1898,8 @@ class AvitoClient:
             / f"{session_id}.json"
         )
         try:
+            ensure_private_directory(target.parent.parent)
+            ensure_private_directory(target.parent)
             snapshot = await collect_browser_snapshot(page)
             snapshot.update(
                 {
@@ -1382,22 +1912,65 @@ class AvitoClient:
             save_browser_snapshot(snapshot, target)
             logger.info("Browser snapshot сохранён: session=%s path=%s", session_id, target)
             return target
-        except (OSError, TypeError, PlaywrightError) as exc:
+        except (AttributeError, OSError, TypeError, PlaywrightError) as exc:
             logger.warning("Не удалось сохранить browser snapshot: %s", exc)
             return None
 
     def _proxy_rotation_available(self) -> bool:
-        return (
-            self._settings.avito_proxy_mode != "direct"
-            and self._settings.avito_proxy_rotation_enabled
-            and bool(
-                self._settings.avito_proxy_pool
-                or self._settings.avito_proxy_change_url
+        mode = self._settings.avito_proxy_mode
+        if mode == "direct" or not self._settings.avito_proxy_rotation_enabled:
+            return False
+        if self._settings.avito_proxy_change_url:
+            return True
+
+        current_proxy = self._avito_proxies.current
+        if mode == "fallback" and current_proxy is not None:
+            direct_key = self._route_health_key(None, use_current_route=False)
+            if self._route_health.quarantine_remaining(direct_key) == 0:
+                return True
+        return any(
+            proxy != current_proxy
+            and self._route_health.quarantine_remaining(
+                self._route_health_key(proxy, use_current_route=False)
             )
+            == 0
+            for proxy in set(self._settings.avito_proxy_pool)
         )
+
+    def proxy_rotation_available(self) -> bool:
+        """Expose the current route capability for user-facing status messages."""
+        return self._proxy_rotation_available()
+
+    def _select_next_healthy_route(self, previous_proxy: str | None) -> str | None:
+        """Select an actually different healthy route when one is available."""
+        direct_key = self._route_health_key(None, use_current_route=False)
+        if (
+            self._settings.avito_proxy_mode == "fallback"
+            and previous_proxy is not None
+            and self._route_health.quarantine_remaining(direct_key) == 0
+        ):
+            self._avito_proxies.use_direct()
+            return None
+
+        selected = self._avito_proxies.select(
+            lambda proxy: proxy != previous_proxy
+            and self._route_health.quarantine_remaining(
+                self._route_health_key(proxy, use_current_route=False)
+            )
+            == 0
+        )
+        if selected is not None:
+            return selected
+
+        # A provider change URL may replace the egress IP behind the same static
+        # endpoint.  Public-IP verification after launch decides whether it is new.
+        if self._settings.avito_proxy_change_url:
+            return self._avito_proxies.rotate()
+        return previous_proxy
 
     async def _replace_blocked_browser_identity(self, reason: str) -> None:
         previous = self._ensure_browser_identity()
+        self._discard_browser_storage_state(previous.identity_id)
         context = self._browser_context
         if context is not None:
             for page in context.pages:
@@ -1451,9 +2024,9 @@ class AvitoClient:
         try:
             async with (
                 aiohttp.ClientSession(timeout=timeout, trust_env=False) as session,
-                session.get(change_url, allow_redirects=True) as response,
+                session.get(change_url, allow_redirects=False) as response,
             ):
-                if response.status >= 400:
+                if not 200 <= response.status < 300:
                     raise AvitoNetworkError(
                         "Сервис смены IP вернул ошибку "
                         f"HTTP {response.status}"
@@ -1463,11 +2036,20 @@ class AvitoClient:
                 f"Не удалось вызвать сервис смены IP: {type(exc).__name__}"
             ) from exc
 
-    async def _rotate_avito_proxy(self, rotation_number: int) -> None:
-        previous_route = _proxy_label(self._avito_proxies.current)
-        await self._replace_blocked_browser_identity("смена IP")
+    async def _rotate_avito_proxy(
+        self,
+        rotation_number: int,
+        *,
+        replace_identity: bool = True,
+    ) -> None:
+        previous_proxy = self._avito_proxies.current
+        previous_route = _proxy_label(previous_proxy)
+        if replace_identity:
+            await self._replace_blocked_browser_identity("смена IP")
+        else:
+            await self._close_browser_network()
         await self._call_proxy_change_url()
-        next_proxy = self._avito_proxies.rotate()
+        next_proxy = self._select_next_healthy_route(previous_proxy)
         self._proxy_prepared_for_browser_start = True
         delay = self._settings.avito_proxy_rotation_delay_seconds
         logger.warning(
@@ -1480,6 +2062,9 @@ class AvitoClient:
         )
         if delay:
             await asyncio.sleep(delay)
+        # Spacing is route-specific here: the next request goes through a newly
+        # selected/verified egress and must not inherit the old route's delay.
+        self._last_avito_request_at = None
         route_kind = "proxy" if next_proxy else "direct"
         self.last_route = (
             f"chromium+curl-{route_kind}"
@@ -1601,17 +2186,19 @@ class AvitoClient:
                     },
                     allow_redirects=True,
                 )
-                await self._sync_curl_cookies_to_browser(session)
                 if response.status_code == 429:
-                    raise self._rate_limit_error(response.headers)
+                    retry_after = (
+                        _retry_after_seconds(response.headers)
+                        or self._settings.avito_rate_limit_cooldown_seconds
+                    )
+                    raise AvitoRateLimitedError(
+                        "JSON-пагинация Avito вернула HTTP 429",
+                        retry_after_seconds=retry_after,
+                    )
                 if response.status_code == 401:
                     raise AvitoSessionError("JSON-пагинация Avito вернула HTTP 401")
                 if response.status_code == 403:
                     if _is_blocked_html(response.text):
-                        self._quarantine_current_route(
-                            seconds=self._settings.avito_ip_quarantine_seconds,
-                            reason="http-403",
-                        )
                         raise AvitoBlockedError("JSON-пагинация Avito вернула HTTP 403")
                     raise AvitoSessionError(
                         "JSON-пагинация Avito вернула HTTP 403 без признаков IP-блокировки",
@@ -1627,10 +2214,6 @@ class AvitoClient:
                         f"HTTP {response.status_code}"
                     )
                 if _is_blocked_html(response.text):
-                    self._quarantine_current_route(
-                        seconds=self._settings.avito_ip_quarantine_seconds,
-                        reason="blocked-page",
-                    )
                     raise AvitoBlockedError("JSON-пагинация Avito вернула страницу блокировки")
                 try:
                     payload = response.json()
@@ -1642,6 +2225,10 @@ class AvitoClient:
                     raise AvitoParseError(
                         "В ответе JSON-пагинации Avito отсутствует catalog"
                     )
+                # A rejected or malformed optional API response must never mutate
+                # the healthy Chromium context.  Import Set-Cookie only after the
+                # response is known to be a valid catalog payload.
+                await self._sync_curl_cookies_to_browser(session)
                 return parse_api_response(payload)
             except AvitoBlockedError:
                 raise
@@ -1678,6 +2265,15 @@ class AvitoClient:
         session = await self._get_curl_session()
         await self._sync_browser_cookies_to_curl(session)
         result = {item.id: item for item in first_page_items}
+        api_health_key = f"optional-api:{self._route_health_key()}"
+        api_cooldown = self._route_health.quarantine_remaining(api_health_key)
+        if api_cooldown:
+            logger.info(
+                "Необязательная JSON-пагинация Avito на паузе ещё %s с; "
+                "используется успешная первая страница",
+                api_cooldown,
+            )
+            return first_page_items
         for page_number in range(2, page_limit + 1):
             try:
                 page_items = await self._request_api_page(
@@ -1685,23 +2281,40 @@ class AvitoClient:
                     page_state=page_state,
                     search_url=search_url,
                 )
-            except (AvitoRateLimitedError, AvitoSessionError):
-                raise
-            except AvitoBlockedError as exc:
-                if self._proxy_rotation_available():
-                    raise _AvitoProxyRotationRequired(str(exc)) from exc
+            except AvitoRateLimitedError as exc:
+                retry_after = (
+                    exc.retry_after_seconds
+                    or self._settings.avito_rate_limit_cooldown_seconds
+                )
+                self._route_health.quarantine(
+                    api_health_key,
+                    retry_after,
+                    "optional-api-rate-limit",
+                )
                 logger.warning(
-                    "JSON-пагинация Avito заблокирована на странице %s: %s. "
-                    "Результаты первой страницы сохранены.",
+                    "JSON-пагинация Avito остановлена на странице %s на %s с: %s. "
+                    "Успешные результаты первой страницы сохранены.",
                     page_number,
+                    retry_after,
                     exc,
                 )
                 break
             except AvitoError as exc:
+                retry_after = (
+                    exc.retry_after_seconds
+                    or self._settings.avito_rate_limit_cooldown_seconds
+                )
+                self._route_health.quarantine(
+                    api_health_key,
+                    retry_after,
+                    "optional-api-error",
+                )
                 logger.warning(
-                    "JSON-пагинация Avito остановлена на странице %s: %s. "
-                    "Результаты первой страницы сохранены.",
+                    "JSON-пагинация Avito остановлена на странице %s на %s с: %s. "
+                    "Успешные результаты первой страницы сохранены; браузерная "
+                    "сессия не перезапускается ради необязательной пагинации.",
                     page_number,
+                    retry_after,
                     exc,
                 )
                 break
@@ -1791,6 +2404,7 @@ class AvitoClient:
         page_name: str,
         on_blocked: BlockedCallback | None = None,
         headers: Mapping[str, object] | None = None,
+        require_expected_dom: bool = False,
     ) -> tuple[int | None, str, bool]:
         """Return immediately on success; wait and reload only after an Avito error."""
         recovered_home = (
@@ -1800,10 +2414,43 @@ class AvitoClient:
             and _is_avito_url(page.url)
             and await _is_visually_loaded_avito_home(page, html)
         )
-        if _is_avito_page_ready(status, html, page.url) or recovered_home:
-            if recovered_home and _is_blocked_html(html):
+        if (
+            page_name == AVITO_HOME_PAGE_NAME
+            and status is not None
+            and status < 400
+            and _is_avito_url(page.url)
+            and not recovered_home
+        ):
+            # `goto(wait_until="commit")` and DOMContentLoaded can both precede
+            # hydration.  Wait for either a real home DOM or a visible block state
+            # before marking browser warm-up complete.
+            wait_for_function = getattr(page, "wait_for_function", None)
+            if wait_for_function is not None:
+                with suppress(PlaywrightError):
+                    await wait_for_function(
+                        AVITO_HOME_TERMINAL_SCRIPT,
+                        timeout=self._settings.request_timeout_seconds * 1000,
+                    )
+                html = await page.content()
+                recovered_home = await _is_visually_loaded_avito_home(page, html)
+        recovered_search = (
+            page_name == AVITO_SEARCH_PAGE_NAME
+            and status is not None
+            and status < 400
+            and _is_avito_url(page.url)
+            and await _is_visually_loaded_avito_search(page, html)
+        )
+        recovered_expected_page = recovered_home or recovered_search
+        page_ready = (
+            recovered_expected_page
+            if page_name == AVITO_HOME_PAGE_NAME or require_expected_dom
+            else _is_avito_page_ready(status, html, page.url)
+            or recovered_expected_page
+        )
+        if page_ready:
+            if recovered_expected_page and _is_blocked_html(html):
                 logger.info(
-                    "Avito: главная страница уже отображается; "
+                    "Avito: ожидаемая страница уже отображается; "
                     "остаточные признаки блокировки в HTML и URL игнорируются"
                 )
             logger.info("Avito: %s успешно загружена без ожидания", page_name)
@@ -1812,7 +2459,11 @@ class AvitoClient:
         if status == 401:
             raise AvitoSessionError("Avito отклонил текущую сессию (HTTP 401)")
 
-        if status == 429 and not _is_transient_ip_problem_html(html):
+        if (
+            status == 429
+            and not _is_transient_ip_problem_html(html)
+            and not _requires_immediate_restart_html(html)
+        ):
             raise self._rate_limit_error(headers)
 
         if status == 403 and not _is_blocked_html(html):
@@ -1845,27 +2496,51 @@ class AvitoClient:
                 status,
                 diagnostic_path or "не сохранён",
             )
-            if on_blocked is not None:
-                error_type = AvitoCaptchaRequiredError if is_captcha else AvitoBlockedError
-                blocked_error = error_type(
-                    (
-                        f"Avito показал капчу: {page_name}, HTTP {status}; меняю пользователя"
-                        if is_captcha
-                        else f"Avito заблокировал IP: {page_name}, HTTP {status}; меняю прокси"
-                    ),
-                    diagnostic_path=diagnostic_path,
-                )
-                try:
-                    await on_blocked(blocked_error)
-                except Exception:
-                    logger.exception("Не удалось отправить уведомление о блокировке Avito")
-            if self._proxy_rotation_available():
+            error_type = (
+                AvitoCaptchaRequiredError if is_captcha else AvitoHardBlockedError
+            )
+            blocked_error = error_type(
+                (
+                    f"Avito показал капчу: {page_name}, HTTP {status}; меняю пользователя"
+                    if is_captcha
+                    else f"Avito заблокировал IP: {page_name}, HTTP {status}; меняю прокси"
+                ),
+                diagnostic_path=diagnostic_path,
+            )
+            rotation_available = self._proxy_rotation_available()
+            blocked_error.rotation_planned = rotation_available
+            if rotation_available:
                 raise _AvitoProxyRotationRequired(
                     "Avito потребовал немедленную смену пользователя и IP",
                     diagnostic_path=diagnostic_path,
+                    notification_error=blocked_error if on_blocked is not None else None,
                 )
-            raise AvitoBlockedError(
+            await self._replace_blocked_browser_identity(
+                "жёсткая блокировка без доступной смены IP"
+            )
+            self._start_cooldown()
+            if on_blocked is not None:
+                try:
+                    await on_blocked(blocked_error)
+                except Exception:
+                    logger.exception(
+                        "Не удалось отправить уведомление о блокировке Avito"
+                    )
+            raise AvitoHardBlockedError(
                 "Avito заблокировал текущую сессию, но смена IP недоступна",
+                diagnostic_path=diagnostic_path,
+                retry_after_seconds=self._settings.avito_cooldown_seconds,
+            )
+
+        if (
+            status is not None
+            and status < 400
+            and _is_avito_url(page.url)
+            and not _is_transient_ip_problem_html(html)
+        ):
+            diagnostic_path = await self._save_browser_diagnostic(page, status)
+            raise AvitoParseError(
+                f"Avito вернул HTTP {status}, но ожидаемый DOM ({page_name}) не появился",
                 diagnostic_path=diagnostic_path,
             )
 
@@ -1965,12 +2640,27 @@ class AvitoClient:
                     ),
                 )
             )
-            if recovered_home:
+            recovered_search = (
+                page_name == AVITO_SEARCH_PAGE_NAME
+                and status is not None
+                and status < 400
+                and _is_avito_url(page.url)
+                and await _is_visually_loaded_avito_search(
+                    page,
+                    html,
+                    wait_timeout_ms=min(
+                        5_000,
+                        self._settings.request_timeout_seconds * 1000,
+                    ),
+                )
+            )
+            recovered_expected_page = recovered_home or recovered_search
+            if recovered_expected_page:
                 html = await page.content()
-            if _is_avito_page_ready(status, html, page.url) or recovered_home:
-                if recovered_home and _is_blocked_html(html):
+            if _is_avito_page_ready(status, html, page.url) or recovered_expected_page:
+                if recovered_expected_page and _is_blocked_html(html):
                     logger.info(
-                        "Avito: после ожидания отображается готовая главная страница; "
+                        "Avito: после ожидания отображается ожидаемая страница; "
                         "остаточные признаки блокировки игнорируются"
                     )
                 logger.info(
@@ -2053,20 +2743,46 @@ class AvitoClient:
             logger.warning("Снимок Avito пропущен: вкладка осталась about:blank")
             return None
         diagnostic_dir = self._settings.database_path.parent / "diagnostics"
-        diagnostic_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        screenshot_path = diagnostic_dir / f"avito-{status or 'unknown'}-{timestamp}.png"
+        try:
+            ensure_private_directory(diagnostic_dir)
+        except OSError as exc:
+            logger.warning("Не удалось подготовить каталог диагностики Avito: %s", exc)
+            return None
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        stem = f"avito-{status or 'unknown'}-{timestamp}"
+        screenshot_path = diagnostic_dir / f"{stem}.png"
+        html_path = diagnostic_dir / f"{stem}.html"
+        metadata_path = diagnostic_dir / f"{stem}.json"
+        try:
+            html = await page.content()
+            write_private_text(html_path, html)
+            write_private_json(
+                metadata_path,
+                {
+                    "capturedAt": datetime.now().astimezone().isoformat(),
+                    "status": status,
+                    "url": page.url,
+                    "route": self.last_route,
+                    "identityId": self._ensure_browser_identity().identity_id,
+                },
+            )
+        except (AttributeError, OSError, PlaywrightError) as exc:
+            logger.warning("Не удалось сохранить HTML-диагностику Avito: %s", exc)
+        screenshot_saved = False
         try:
             await page.screenshot(
                 path=str(screenshot_path),
                 full_page=False,
                 timeout=min(5_000, self._settings.request_timeout_seconds * 1000),
             )
+            harden_file_permissions(screenshot_path)
+            screenshot_saved = True
             logger.warning("Диагностический снимок Avito сохранён: %s", screenshot_path)
-            return screenshot_path
-        except PlaywrightError as exc:
+        except (AttributeError, OSError, PlaywrightError) as exc:
             logger.warning("Не удалось сохранить снимок Avito: %s", exc)
-            return None
+        finally:
+            prune_avito_diagnostic_bundles(diagnostic_dir)
+        return screenshot_path if screenshot_saved else None
 
     async def _search_route(
         self,
@@ -2077,7 +2793,7 @@ class AvitoClient:
     ) -> list[AvitoItem]:
         session, request_proxy = await self._get_session(use_proxy=use_proxy)
         route_key = self._route_health_key(
-            self._avito_proxies.current if use_proxy else None,
+            request_proxy if use_proxy else None,
             use_current_route=False,
         )
         last_error: Exception | None = None
